@@ -52,11 +52,11 @@ if %errorlevel% neq 0 (
 )
 echo.
 
-:: Register auto-start
+:: Register auto-start (at system boot, not on login)
 echo  [4/5] Registering auto-start task...
-schtasks /create /tn "WOLOW Agent" /tr "pythonw agent.py" /sc onlogon /rl highest /f >nul 2>&1
+schtasks /create /tn "WOLOW Agent" /tr "pythonw agent.py" /sc onstart /rl highest /f >nul 2>&1
 if %errorlevel% equ 0 (
-    echo       Agent will auto-start on login.
+    echo       Agent will auto-start on boot.
 ) else (
     echo       Warning: Could not create auto-start task.
     echo       Agent may need to be started manually after reboot.
@@ -69,7 +69,7 @@ echo.
 echo  ============================================
 echo.
 echo  Starting WOLOW agent now...
-echo  It will auto-start on next login.
+echo  It will auto-start on boot.
 echo  Press Ctrl+C to stop (you can close this window).
 echo.
 echo  ============================================

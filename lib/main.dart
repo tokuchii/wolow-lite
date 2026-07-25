@@ -1106,6 +1106,9 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   String? _wakeTarget;
   Timer? _refreshTimer;
 
+  /// Devices that are booting up after WoL was sent (60 second window)
+  final Map<String, DateTime> _starting = {};
+
   @override
   void initState() {
     super.initState();
@@ -1142,8 +1145,27 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     _checking.add(d.id);
     try {
       final reachable = await _ping.isReachable(d.ipAddress);
+
+      // Check if device is still in "starting" window (60 seconds after WoL)
+      final startingAt = _starting[d.id];
+      final bool isStarting = startingAt != null &&
+          DateTime.now().difference(startingAt).inSeconds < 60;
+
       if (mounted) {
-        setState(() => _online[d.id] = reachable);
+        setState(() {
+          if (reachable) {
+            // Device is reachable — clear starting state
+            _starting.remove(d.id);
+            _online[d.id] = true;
+          } else if (isStarting) {
+            // Still in starting window — keep as "starting" (not offline)
+            _online[d.id] = false;
+          } else {
+            // Not reachable and not starting — truly offline
+            _starting.remove(d.id);
+            _online[d.id] = false;
+          }
+        });
       }
 
       if (d.hasAgent) {
@@ -1158,6 +1180,9 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                 pythonVersion: '',
                 fetchedAt: DateTime.now(),
               );
+              // Agent is online — clear starting state
+              _starting.remove(d.id);
+              _online[d.id] = true;
             });
           }
         } else if (mounted) {
@@ -1185,12 +1210,17 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     setState(() => _wakeTarget = d.id);
     try {
       await _wol.wake(d);
+      // Mark device as "starting" for 60 seconds
+      setState(() {
+        _starting[d.id] = DateTime.now();
+        _online[d.id] = false;
+      });
       if (mounted) {
         showTopNotification(
           context,
-          message: 'Wake packet sent',
+          message: 'Wake packet sent — PC is starting...',
           icon: Icons.power_settings_new_rounded,
-          iconColor: AppColors.green,
+          iconColor: AppColors.orange,
         );
       }
     } catch (e) {
@@ -1294,6 +1324,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                   final d = entry.value;
                   final isWaking = _wakeTarget == d.id;
                   final isOnline = _online[d.id];
+                  final isStarting = _starting.containsKey(d.id);
                   final isLast = entry.key == _devices.length - 1;
 
                   return IOSListTile(
@@ -1303,12 +1334,18 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                       decoration: BoxDecoration(
                         color: isOnline == true
                             ? AppColors.green.withValues(alpha: 0.15)
-                            : AppColors.cardLight,
+                            : isStarting
+                                ? AppColors.orange.withValues(alpha: 0.15)
+                                : AppColors.cardLight,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Icon(
                         Icons.desktop_mac_rounded,
-                        color: isOnline == true ? AppColors.green : AppColors.secondaryLabel,
+                        color: isOnline == true
+                            ? AppColors.green
+                            : isStarting
+                                ? AppColors.orange
+                                : AppColors.secondaryLabel,
                         size: 20,
                       ),
                     ),
@@ -1317,7 +1354,9 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                         : d.name,
                     subtitle: _agentStatus[d.id] != null
                         ? '(${_agentStatus[d.id]!.platform})'
-                        : d.mac,
+                        : isStarting
+                            ? 'Starting...'
+                            : d.mac,
                     trailing: isWaking
                         ? const SizedBox(
                             width: 20,
@@ -2140,6 +2179,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   late Device _device;
   bool _checking = false;
 
+  /// When WoL was sent (for "starting" state)
+  DateTime? _startedAt;
+
   @override
   void initState() {
     super.initState();
@@ -2162,7 +2204,27 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     _checking = true;
     try {
       final reachable = await _ping.isReachable(_device.ipAddress);
-      if (mounted) setState(() => _online = reachable);
+
+      // Check if still in "starting" window (60 seconds after WoL)
+      final bool isStarting = _startedAt != null &&
+          DateTime.now().difference(_startedAt!).inSeconds < 60;
+
+      if (mounted) {
+        setState(() {
+          if (reachable) {
+            // Device is reachable — clear starting state
+            _startedAt = null;
+            _online = true;
+          } else if (isStarting) {
+            // Still in starting window
+            _online = false;
+          } else {
+            // Not reachable and not starting — truly offline
+            _startedAt = null;
+            _online = false;
+          }
+        });
+      }
 
       if (_device.hasAgent) {
         final (ok, msg) = await _agent.testConnection(_device);
@@ -2177,6 +2239,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                   pythonVersion: '',
                   fetchedAt: DateTime.now(),
                 );
+                // Agent is online — clear starting state
+                _startedAt = null;
+                _online = true;
               });
             }
           } else {
@@ -2198,7 +2263,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Future<void> _handleAgent(String action) async {
     setState(() => _busy = true);
     final (ok, msg) = await _agent.sendAction(_device, action);
-    setState(() => _busy = false);
+    setState(() {
+      _busy = false;
+      // Mark as starting for reboot/shutdown actions
+      if (ok && (action == 'reboot' || action == 'shutdown')) {
+        _startedAt = DateTime.now();
+        _online = false;
+      }
+    });
     if (mounted) {
       showTopNotification(
         context,
@@ -2380,30 +2452,42 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     decoration: BoxDecoration(
                       color: _online == true
                           ? AppColors.green.withValues(alpha: 0.15)
-                          : _online == false
-                              ? AppColors.red.withValues(alpha: 0.15)
-                              : AppColors.cardLight,
+                          : _startedAt != null &&
+                                  DateTime.now().difference(_startedAt!).inSeconds < 60
+                              ? AppColors.orange.withValues(alpha: 0.15)
+                              : _online == false
+                                  ? AppColors.red.withValues(alpha: 0.15)
+                                  : AppColors.cardLight,
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Icon(
                       _online == true
                           ? Icons.check_circle_rounded
-                          : _online == false
-                              ? Icons.cancel_rounded
-                              : Icons.help_outline_rounded,
+                          : _startedAt != null &&
+                                  DateTime.now().difference(_startedAt!).inSeconds < 60
+                              ? Icons.hourglass_top_rounded
+                              : _online == false
+                                  ? Icons.cancel_rounded
+                                  : Icons.help_outline_rounded,
                       color: _online == true
                           ? AppColors.green
-                          : _online == false
-                              ? AppColors.red
-                              : AppColors.secondaryLabel,
+                          : _startedAt != null &&
+                                  DateTime.now().difference(_startedAt!).inSeconds < 60
+                              ? AppColors.orange
+                              : _online == false
+                                  ? AppColors.red
+                                  : AppColors.secondaryLabel,
                       size: 20,
                     ),
                   ),
                   title: _online == true
                       ? 'Online'
-                      : _online == false
-                          ? 'Offline'
-                          : 'Checking...',
+                      : _startedAt != null &&
+                              DateTime.now().difference(_startedAt!).inSeconds < 60
+                          ? 'Starting...'
+                          : _online == false
+                              ? 'Offline'
+                              : 'Checking...',
                   subtitle: _agentStatus != null
                       ? '${_agentStatus!.hostname} (${_agentStatus!.platform}) - ${d.ipAddress}'
                       : d.ipAddress,

@@ -20,28 +20,28 @@ if %errorlevel% neq 0 (
 )
 
 echo  [1/6] Enabling PowerShell Remoting...
-powershell -Command "Enable-PSRemoting -Force" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "Enable-PSRemoting -Force" >nul 2>&1
 echo       Done.
 
 echo  [2/6] Configuring WinRM...
-powershell -Command "winrm set winrm/config/service '@{AllowUnencrypted=\"true\"}'" >nul 2>&1
-powershell -Command "winrm set winrm/config/service/auth '@{Basic=\"true\"}'" >nul 2>&1
-powershell -Command "Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "winrm set winrm/config/service '@{AllowUnencrypted=\"true\"}'" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "winrm set winrm/config/service/auth '@{Basic=\"true\"}'" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force" >nul 2>&1
 echo       Done.
 
 echo  [3/6] Opening firewall ports...
-powershell -Command "New-NetFirewallRule -DisplayName 'WOLOW WinRM' -Direction Inbound -LocalPort 5985 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
-powershell -Command "New-NetFirewallRule -DisplayName 'WOLOW RDP' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
-powershell -Command "New-NetFirewallRule -DisplayName 'WOLOW SMB' -Direction Inbound -LocalPort 445 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
-powershell -Command "New-NetFirewallRule -DisplayName 'WOLOW RPC' -Direction Inbound -LocalPort 135 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "New-NetFirewallRule -DisplayName 'WOLOW WinRM' -Direction Inbound -LocalPort 5985 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "New-NetFirewallRule -DisplayName 'WOLOW RDP' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "New-NetFirewallRule -DisplayName 'WOLOW SMB' -Direction Inbound -LocalPort 445 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "New-NetFirewallRule -DisplayName 'WOLOW RPC' -Direction Inbound -LocalPort 135 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
 echo       Done.
 
 echo  [4/6] Starting WinRM service...
-powershell -Command "Set-Service -Name WinRM -StartupType Automatic; Start-Service WinRM" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "Set-Service -Name WinRM -StartupType Automatic; Start-Service WinRM" >nul 2>&1
 echo       Done.
 
 echo  [5/6] Testing connection...
-powershell -Command "Test-WSMan -ComputerName localhost" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "Test-WSMan -ComputerName localhost" >nul 2>&1
 if %errorlevel% equ 0 (
     echo       WinRM is working!
 ) else (
@@ -84,11 +84,11 @@ if not exist "pc_agent\config.yaml" (
     echo       Config already exists, keeping existing token.
 )
 
-:: Register auto-start
+:: Register auto-start (at system boot, not on login)
 echo       Registering auto-start task...
-schtasks /create /tn "WOLOW Agent" /tr "pythonw pc_agent\agent.py" /sc onlogon /rl highest /f >nul 2>&1
+schtasks /create /tn "WOLOW Agent" /tr "pythonw pc_agent\agent.py" /sc onstart /rl highest /f >nul 2>&1
 if %errorlevel% equ 0 (
-    echo       Agent will auto-start on login.
+    echo       Agent will auto-start on boot.
 ) else (
     echo       Warning: Could not create auto-start task.
     echo       Agent may need to be started manually after reboot.
@@ -96,8 +96,8 @@ if %errorlevel% equ 0 (
 
 :: Open firewall ports for agent
 echo       Opening firewall ports for agent...
-powershell -Command "New-NetFirewallRule -DisplayName 'WOLOW Agent HTTP' -Direction Inbound -LocalPort 8220 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
-powershell -Command "New-NetFirewallRule -DisplayName 'WOLOW Agent UDP' -Direction Inbound -LocalPort 8221 -Protocol UDP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "New-NetFirewallRule -DisplayName 'WOLOW Agent HTTP' -Direction Inbound -LocalPort 8220 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "New-NetFirewallRule -DisplayName 'WOLOW Agent UDP' -Direction Inbound -LocalPort 8221 -Protocol UDP -Action Allow -ErrorAction SilentlyContinue" >nul 2>&1
 echo       Done.
 
 :: Start agent
