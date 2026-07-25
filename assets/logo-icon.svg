@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1C1C1E"/>
+      <stop offset="100%" style="stop-color:#000000"/>
+    </linearGradient>
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0A84FF"/>
+      <stop offset="100%" style="stop-color:#0070E0"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="256" fill="url(#bgGrad)"/>
+  
+  <!-- Outer ring -->
+  <circle cx="256" cy="256" r="240" fill="none" stroke="#38383A" stroke-width="1"/>
+  
+  <!-- Power button circle -->
+  <circle cx="256" cy="240" r="96" fill="none" stroke="url(#blueGrad)" stroke-width="14" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- Power button line -->
+  <line x1="256" y1="144" x2="256" y2="200" stroke="url(#blueGrad)" stroke-width="14" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- Signal waves - left -->
+  <path d="M 152 320 Q 108 368 152 416" fill="none" stroke="#0A84FF" stroke-width="10" stroke-linecap="round" opacity="0.7"/>
+  <path d="M 116 296 Q 60 368 116 440" fill="none" stroke="#0A84FF" stroke-width="10" stroke-linecap="round" opacity="0.45"/>
+  <path d="M 80 272 Q 12 368 80 464" fill="none" stroke="#0A84FF" stroke-width="10" stroke-linecap="round" opacity="0.2"/>
+  
+  <!-- Signal waves - right -->
+  <path d="M 360 320 Q 404 368 360 416" fill="none" stroke="#0A84FF" stroke-width="10" stroke-linecap="round" opacity="0.7"/>
+  <path d="M 396 296 Q 452 368 396 440" fill="none" stroke="#0A84FF" stroke-width="10" stroke-linecap="round" opacity="0.45"/>
+  <path d="M 432 272 Q 500 368 432 464" fill="none" stroke="#0A84FF" stroke-width="10" stroke-linecap="round" opacity="0.2"/>
+</svg>
