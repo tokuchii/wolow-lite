@@ -9,7 +9,7 @@ Endpoints:
 
 UDP Discovery:
   Listens on UDP port 8221 for "WOLOW_DISCOVER" packets.
-  Responds with JSON: {"hostname": "...", "port": 8220, "platform": "..."}
+  Responds with its connection details and authentication token.
 
 Actions: reboot, shutdown, sleep, hibernate, lock
 """
@@ -20,6 +20,8 @@ import platform
 import socket
 import threading
 from functools import wraps
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from flask import Flask, jsonify, request
 
@@ -29,12 +31,16 @@ from config import load_config
 cfg = load_config()
 app = Flask(__name__)
 
-logging.basicConfig(
-    level=getattr(logging, cfg["logging"]["level"].upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 log = logging.getLogger("wolow-agent")
+log.setLevel(getattr(logging, cfg["logging"]["level"].upper(), logging.INFO))
+if not log.handlers:
+    handler = RotatingFileHandler(
+        Path(__file__).with_name("wolow-agent.log"), maxBytes=1_000_000, backupCount=3
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    log.addHandler(handler)
 
 EXPECTED_TOKEN = cfg["server"]["token"]
 HTTP_PORT = cfg["server"]["port"]
@@ -133,7 +139,7 @@ def _discovery_listener():
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main():
     host = cfg["server"]["host"]
     port = cfg["server"]["port"]
 
@@ -142,5 +148,8 @@ if __name__ == "__main__":
     disc_thread.start()
 
     log.info("Starting WOLOW agent on %s:%d", host, port)
-    log.info("Token: %s...%s", EXPECTED_TOKEN[:4], EXPECTED_TOKEN[-4:])
     app.run(host=host, port=port, debug=False)
+
+
+if __name__ == "__main__":
+    main()

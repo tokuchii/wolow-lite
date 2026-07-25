@@ -86,7 +86,9 @@ def get_mac_address() -> str:
     mac = "unknown"
     if is_windows():
         try:
-            output = subprocess.check_output(["getmac", "/fo", "csv", "/nh"], text=True)
+            output = subprocess.check_output(
+                ["getmac", "/fo", "csv", "/nh"], text=True, stderr=subprocess.DEVNULL
+            )
             for line in output.strip().splitlines():
                 parts = line.split(",")
                 if len(parts) >= 1:

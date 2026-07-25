@@ -1,78 +1,69 @@
 @echo off
+setlocal EnableExtensions
 title WOLOW Agent Setup
-color 0F
+
+set "TASK_NAME=WOLOW Agent"
+set "AGENT_DIR=%~dp0"
+set "AGENT_SCRIPT=%AGENT_DIR%agent.py"
+
 echo.
 echo  ============================================
-echo   WOLOW Agent - One-Click Setup
+echo   WOLOW Agent - Background Service Setup
 echo  ============================================
 echo.
 
-:: Check admin
 net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [!] Right-click this file and select "Run as administrator"
-    echo.
-    pause
+if errorlevel 1 (
+    echo  [!] Run this file as Administrator.
     exit /b 1
 )
 
-:: Check Python
-echo  [1/5] Checking Python...
+echo  [1/4] Checking Python...
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [!] Python is not installed or not in PATH.
-    echo.
-    echo  Download Python: https://www.python.org/downloads/
-    echo  IMPORTANT: Check "Add Python to PATH" during install.
-    echo.
-    pause
+if errorlevel 1 (
+    echo  [!] Python is not installed or is not available on PATH.
+    echo      Install Python, select "Add Python to PATH", then run setup again.
     exit /b 1
 )
-python --version
-echo.
 
-:: Install dependencies
-echo  [2/5] Installing dependencies...
-pip install -r requirements.txt --quiet 2>nul
-if %errorlevel% neq 0 (
-    echo  [!] Failed to install dependencies. Try running as Administrator.
-    pause
+for /f "usebackq delims=" %%P in (`python -c "import sys; print(sys.executable)" 2^>nul`) do set "PYTHON_EXE=%%P"
+if not defined PYTHON_EXE (
+    echo  [!] Could not determine the Python executable.
     exit /b 1
 )
-echo       Done.
-echo.
+for %%P in ("%PYTHON_EXE%") do set "PYTHON_DIR=%%~dpP"
+set "PYTHONW_EXE=%PYTHON_DIR%pythonw.exe"
+if not exist "%PYTHONW_EXE%" set "PYTHONW_EXE=%PYTHON_EXE%"
 
-:: Generate token
-echo  [3/5] Generating authentication token...
-python generate_token.py
-if %errorlevel% neq 0 (
-    echo  [!] Failed to generate token.
-    pause
+echo  [2/4] Installing agent dependencies...
+"%PYTHON_EXE%" -m pip install -r "%AGENT_DIR%requirements.txt" --quiet
+if errorlevel 1 (
+    echo  [!] Dependency installation failed.
     exit /b 1
 )
-echo.
 
-:: Register auto-start (at system boot, not on login)
-echo  [4/5] Registering auto-start task...
-schtasks /create /tn "WOLOW Agent" /tr "pythonw agent.py" /sc onstart /rl highest /f >nul 2>&1
-if %errorlevel% equ 0 (
-    echo       Agent will auto-start on boot.
+echo  [3/4] Ensuring agent configuration exists...
+if not exist "%AGENT_DIR%config.yaml" (
+    "%PYTHON_EXE%" "%AGENT_DIR%generate_token.py"
+    if errorlevel 1 exit /b 1
 ) else (
-    echo       Warning: Could not create auto-start task.
-    echo       Agent may need to be started manually after reboot.
+    echo       Existing config.yaml kept.
 )
-echo.
 
-:: Done
-echo  [5/5] Setup complete!
-echo.
-echo  ============================================
-echo.
-echo  Starting WOLOW agent now...
-echo  It will auto-start on next login.
-echo  Press Ctrl+C to stop (you can close this window).
-echo.
-echo  ============================================
-echo.
+echo  [4/4] Registering one boot-start task and starting it...
+"%PYTHON_EXE%" "%AGENT_DIR%install_task.py" --task-name "%TASK_NAME%" --python "%PYTHONW_EXE%" --agent "%AGENT_SCRIPT%"
+if errorlevel 1 (
+    echo  [!] Failed to register the WOLOW Agent task.
+    exit /b 1
+)
 
-python agent.py
+schtasks /run /tn "%TASK_NAME%" >nul
+if errorlevel 1 (
+    echo  [!] The task was registered but could not be started. Check Task Scheduler history.
+    exit /b 1
+)
+
+echo.
+echo  Setup complete. The agent runs silently at every Windows boot.
+echo  Logs: %AGENT_DIR%wolow-agent.log
+exit /b 0

@@ -478,6 +478,16 @@ class Validators {
   }
 
   static bool isValidPort(int port) => const {0, 7, 9}.contains(port);
+
+  /// MAC addresses identify a physical device, regardless of their separator
+  /// format or capitalization.
+  static bool hasDuplicateMac(Iterable<Device> devices, String mac,
+      {String? excludingId}) {
+    final normalizedMac = mac.replaceAll(RegExp('[:-]'), '').toLowerCase();
+    return devices.any((device) =>
+        device.id != excludingId &&
+        device.mac.replaceAll(RegExp('[:-]'), '').toLowerCase() == normalizedMac);
+  }
 }
 
 // ============================================================
@@ -720,14 +730,16 @@ class DiscoveryService {
     try {
       final localResult = await _httpProbe('127.0.0.1', timeoutMs: 1500);
       if (localResult != null) {
-        agents.add(localResult);
+        _addAgent(agents, localResult);
       }
     } catch (_) {}
 
     // Method 1: Try UDP broadcast
     try {
       final udpResults = await _udpDiscover(timeoutMs: timeoutMs);
-      agents.addAll(udpResults);
+      for (final agent in udpResults) {
+        _addAgent(agents, agent);
+      }
     } catch (_) {}
 
     // Method 2: Try direct HTTP probe to the device's IP
@@ -735,7 +747,7 @@ class DiscoveryService {
       try {
         final httpResult = await _httpProbe(deviceIp, timeoutMs: 2000);
         if (httpResult != null) {
-          agents.add(httpResult);
+          _addAgent(agents, httpResult);
         }
       } catch (_) {}
     }
@@ -744,11 +756,63 @@ class DiscoveryService {
     if (agents.isEmpty) {
       try {
         final subnetResults = await _subnetScan(timeoutMs: 1500);
-        agents.addAll(subnetResults);
+        for (final agent in subnetResults) {
+          _addAgent(agents, agent);
+        }
       } catch (_) {}
     }
 
-    return agents.toList();
+    // UDP discovery often finds the PC without a token (older agents). Always
+    // follow up with HTTP /status so the token and MAC are populated.
+    final enriched = await Future.wait(
+      agents.map((agent) => enrichFromStatus(agent)),
+    );
+    return enriched;
+  }
+
+  void _addAgent(Set<DiscoveredAgent> agents, DiscoveredAgent incoming) {
+    final existing = agents.where(
+      (a) => a.ip == incoming.ip && a.port == incoming.port,
+    );
+    if (existing.isEmpty) {
+      agents.add(incoming);
+      return;
+    }
+    final current = existing.first;
+    final currentHasToken =
+        current.token != null && current.token!.isNotEmpty;
+    final incomingHasToken =
+        incoming.token != null && incoming.token!.isNotEmpty;
+    if (!currentHasToken && incomingHasToken) {
+      agents.remove(current);
+      agents.add(incoming);
+    }
+  }
+
+  /// Fetch token and other details from the agent's HTTP /status endpoint.
+  Future<DiscoveredAgent> enrichFromStatus(DiscoveredAgent agent) async {
+    if (agent.token != null && agent.token!.isNotEmpty) return agent;
+    try {
+      final uri = Uri.parse('http://${agent.ip}:${agent.port}/status');
+      final response = await _client.get(uri).timeout(const Duration(seconds: 3));
+      if (response.statusCode != 200) return agent;
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (body['ok'] != true) return agent;
+
+      final token = body['token'] as String?;
+      final mac = body['mac'] as String?;
+      return DiscoveredAgent(
+        ip: agent.ip,
+        hostname: body['hostname'] as String? ?? agent.hostname,
+        platform: body['platform'] as String? ?? agent.platform,
+        mac: mac != null && mac.isNotEmpty ? mac : agent.mac,
+        port: agent.port,
+        token: token != null && token.isNotEmpty ? token : agent.token,
+      );
+    } catch (_) {
+      return agent;
+    }
   }
 
   /// Repeatedly send WOLOW_DISCOVER and collect responses over a longer period.
@@ -819,8 +883,7 @@ class DiscoveryService {
 
   /// Probe a specific IP for a running agent via HTTP
   Future<DiscoveredAgent?> _httpProbe(String ip, {int timeoutMs = 2000}) async {
-    // Try common agent ports
-    for (final port in [8220, 8221]) {
+    for (final port in [8220]) {
       try {
         final uri = Uri.parse('http://$ip:$port/status');
         final response = await _client.get(uri).timeout(
@@ -1197,9 +1260,22 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   Future<void> _addDevice() async {
     final newDevice = await Navigator.push<Device>(
       context,
-      MaterialPageRoute(builder: (_) => const AddDeviceScreen()),
+      MaterialPageRoute(builder: (_) => AddDeviceScreen(existingDevices: _devices)),
     );
     if (newDevice != null) {
+      // Keep a guard here as well as in AddDeviceScreen in case the saved list
+      // changes while the add screen is open.
+      if (Validators.hasDuplicateMac(_devices, newDevice.mac)) {
+        if (mounted) {
+          showTopNotification(
+            context,
+            message: 'This device has already been added',
+            icon: Icons.error_outline_rounded,
+            iconColor: AppColors.red,
+          );
+        }
+        return;
+      }
       setState(() => _devices.add(newDevice));
       await _storage.saveDevices(_devices);
       _checkDevice(newDevice);
@@ -1518,7 +1594,13 @@ class _IOSAction {
 
 class AddDeviceScreen extends StatefulWidget {
   final Device? device;
-  const AddDeviceScreen({super.key, this.device});
+  final List<Device> existingDevices;
+
+  const AddDeviceScreen({
+    super.key,
+    this.device,
+    this.existingDevices = const [],
+  });
 
   @override
   State<AddDeviceScreen> createState() => _AddDeviceScreenState();
@@ -1550,6 +1632,9 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       _port = d.port;
       _agentPortCtrl.text = d.agentPort.toString();
       _agentTokenCtrl.text = d.agentToken;
+    } else {
+      _subnetCtrl.text = '255.255.255.0';
+      _agentPortCtrl.text = '8220';
     }
   }
 
@@ -1603,6 +1688,15 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
 
     if (!Validators.isValidPort(_port)) {
       _showError('WoL port must be 0, 7, or 9');
+      return;
+    }
+
+    if (Validators.hasDuplicateMac(
+      widget.existingDevices,
+      mac,
+      excludingId: widget.device?.id,
+    )) {
+      _showError('This device has already been added');
       return;
     }
 
@@ -1668,6 +1762,31 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     );
   }
 
+  void _applyDiscoveredAgent(DiscoveredAgent agent) {
+    setState(() {
+      _nameCtrl.text = agent.hostname;
+      _ipCtrl.text = agent.ip;
+      _subnetCtrl.text = '255.255.255.0';
+      _port = 9;
+      _agentPortCtrl.text = agent.port.toString();
+      if (agent.token != null && agent.token!.isNotEmpty) {
+        _agentTokenCtrl.text = agent.token!;
+      }
+      if (agent.mac.isNotEmpty) {
+        _macCtrl.text = agent.mac;
+      }
+    });
+  }
+
+  Future<DiscoveredAgent?> _pickAgent(List<DiscoveredAgent> agents) async {
+    if (agents.length == 1) return agents.first;
+    return showModalBottomSheet<DiscoveredAgent>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AgentPickerSheet(agents: agents),
+    );
+  }
+
   Future<void> _scanForAgent() async {
     setState(() {
       _scanning = true;
@@ -1717,35 +1836,37 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
 
       if (!mounted) return;
 
-      final selected = await showModalBottomSheet<DiscoveredAgent>(
-        context: context,
-        backgroundColor: Colors.transparent,
-        builder: (_) => _AgentPickerSheet(agents: agents),
-      );
+      final selected = await _pickAgent(agents);
 
       if (selected != null && mounted) {
-        // Auto-fill all fields from discovered agent
-        setState(() {
-          _ipCtrl.text = selected.ip;
-          _agentPortCtrl.text = selected.port.toString();
-          _subnetCtrl.text = '255.255.255.0';
-          if (selected.token != null && selected.token!.isNotEmpty) {
-            _agentTokenCtrl.text = selected.token!;
-          }
-          if (selected.mac.isNotEmpty) {
-            _macCtrl.text = selected.mac;
-          }
-          if (_nameCtrl.text.isEmpty) {
-            _nameCtrl.text = selected.hostname;
-          }
-        });
+        final agent = await discovery.enrichFromStatus(selected);
+        _applyDiscoveredAgent(agent);
 
-        showTopNotification(
-          context,
-          message: 'Found ${selected.hostname} (${selected.platform})',
-          icon: Icons.check_circle_outline_rounded,
-          iconColor: AppColors.green,
-        );
+        if (!mounted) return;
+
+        if (agent.token == null || agent.token!.isEmpty) {
+          showTopNotification(
+            context,
+            message:
+                'PC found but token missing — rerun setup.bat on your PC, then scan again',
+            icon: Icons.warning_amber_rounded,
+            iconColor: AppColors.orange,
+          );
+        } else if (agent.mac.isEmpty) {
+          showTopNotification(
+            context,
+            message: 'PC found — tap Add to save',
+            icon: Icons.check_circle_outline_rounded,
+            iconColor: AppColors.green,
+          );
+        } else {
+          showTopNotification(
+            context,
+            message: 'All fields filled — tap Add to save',
+            icon: Icons.check_circle_outline_rounded,
+            iconColor: AppColors.green,
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -1808,9 +1929,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
             child: Column(
               children: [
                 const SizedBox(height: 20),
-            // Scan button (only when adding new device)
-            if (!_isEditing)
-              Padding(
+            // Let existing devices refresh their connection details too.
+            Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: SizedBox(
                   width: double.infinity,
@@ -1818,7 +1938,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                     color: AppColors.blue,
                     borderRadius: BorderRadius.circular(12),
                     child: InkWell(
-                      onTap: _scanForAgent,
+                      onTap: _scanning ? null : _scanForAgent,
                       borderRadius: BorderRadius.circular(12),
                       child: const Padding(
                         padding: EdgeInsets.symmetric(vertical: 14),
@@ -1847,13 +1967,13 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
               children: [
                 _buildField(
                   hint: 'Name',
-                  description: 'A label for this device.',
+                  description: 'Auto-filled when you scan for the agent.',
                   controller: _nameCtrl,
                   textCapitalization: TextCapitalization.words,
                 ),
                 _buildField(
                   hint: 'MAC Address',
-                  description: 'XX:XX:XX:XX:XX:XX format. Auto-filled on scan.',
+                  description: 'Auto-filled when you scan for the agent.',
                   controller: _macCtrl,
                   textCapitalization: TextCapitalization.characters,
                   showSeparator: false,
@@ -1865,13 +1985,13 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
               children: [
                 _buildField(
                   hint: 'IP Address',
-                  description: 'PC\'s IPv4 address. Run ipconfig to find it.',
+                  description: 'Auto-filled when you scan for the agent.',
                   controller: _ipCtrl,
                   keyboardType: TextInputType.number,
                 ),
                 _buildField(
                   hint: 'Subnet Mask',
-                  description: 'Usually 255.255.255.0.',
+                  description: 'Usually 255.255.255.0. Auto-filled on scan.',
                   controller: _subnetCtrl,
                   keyboardType: TextInputType.number,
                 ),
@@ -1958,16 +2078,15 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 ),
                 _buildField(
                   hint: 'Agent Port',
-                  description: 'Default: 8220.',
+                  description: 'Auto-filled when you scan for the agent.',
                   controller: _agentPortCtrl,
                   keyboardType: TextInputType.number,
                 ),
                 _buildField(
                   hint: 'Agent Token',
-                  description: 'Token from setup.bat output or config.yaml.',
+                  description: 'Auto-filled when you scan for the agent.',
                   controller: _agentTokenCtrl,
                   obscureText: _obscureToken,
-                  showPaste: true,
                   suffix: GestureDetector(
                     onTap: () => setState(() => _obscureToken = !_obscureToken),
                     child: Padding(
@@ -2068,7 +2187,6 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     bool showSeparator = true,
     bool obscureText = false,
     Widget? suffix,
-    bool showPaste = false,
   }) {
     return Column(
       children: [
@@ -2096,36 +2214,6 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                   ),
                 ),
               ),
-              if (showPaste)
-                GestureDetector(
-                  onTap: () async {
-                    final data = await Clipboard.getData('text/plain');
-                    if (data?.text != null) {
-                      controller.text = data!.text!;
-                      controller.selection = TextSelection.fromPosition(
-                        TextPosition(offset: data.text!.length),
-                      );
-                    }
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: AppColors.blue.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: const Text(
-                        'Paste',
-                        style: TextStyle(
-                          color: AppColors.blue,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
               if (suffix != null) suffix,
             ],
           ),
@@ -2341,16 +2429,17 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       );
 
       if (selected != null && mounted) {
+        final agent = await discovery.enrichFromStatus(selected);
         // Update device with discovered agent info
         final updated = Device(
           id: _device.id,
-          name: selected.hostname,
-          mac: _device.mac,
-          ipAddress: _device.ipAddress,
+          name: agent.hostname,
+          mac: agent.mac.isNotEmpty ? agent.mac : _device.mac,
+          ipAddress: agent.ip,
           subnetMask: _device.subnetMask,
           port: _device.port,
-          agentPort: selected.port,
-          agentToken: selected.token ?? _device.agentToken,
+          agentPort: agent.port,
+          agentToken: agent.token ?? _device.agentToken,
         );
         setState(() {
           _device = updated;
@@ -2367,12 +2456,22 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         }
 
         if (mounted) {
-          showTopNotification(
-            context,
-            message: 'Connected to ${selected.hostname} (${selected.platform})',
-            icon: Icons.check_circle_outline_rounded,
-            iconColor: AppColors.green,
-          );
+          if (updated.agentToken.isEmpty) {
+            showTopNotification(
+              context,
+              message:
+                  'PC found but token missing — rerun setup.bat on your PC, then scan again',
+              icon: Icons.warning_amber_rounded,
+              iconColor: AppColors.orange,
+            );
+          } else {
+            showTopNotification(
+              context,
+              message: 'Connected to ${agent.hostname} (${agent.platform})',
+              icon: Icons.check_circle_outline_rounded,
+              iconColor: AppColors.green,
+            );
+          }
         }
       } else {
         setState(() {
@@ -2397,10 +2496,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   Future<void> _editDevice() async {
+    final existingDevices = await _storage.loadDevices();
     final updated = await Navigator.push<Device>(
       context,
       MaterialPageRoute(
-        builder: (_) => AddDeviceScreen(device: _device),
+        builder: (_) => AddDeviceScreen(
+          device: _device,
+          existingDevices: existingDevices,
+        ),
       ),
     );
     if (!mounted) return;
@@ -2524,12 +2627,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     iconColor: AppColors.secondaryLabel,
                     label: 'Lock',
                     onTap: _busy ? null : () => _handleAgent('lock'),
-                  ),
-                  IOSActionButton(
-                    icon: Icons.radar_rounded,
-                    iconColor: AppColors.blue,
-                    label: 'Scan for Agent',
-                    onTap: _busy ? null : _scanForAgent,
                   ),
                 ],
               ),
