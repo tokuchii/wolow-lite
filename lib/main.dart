@@ -12,8 +12,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
@@ -616,32 +616,23 @@ class AudioOutputService {
     return false;
   }
 
-  /// Toggle mute on the PC.
-  Future<bool> toggleMute(Device device) async {
+  /// Set mute state on the PC. Returns true on success.
+  Future<bool> setMute(Device device, bool muted) async {
     final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/volume');
     try {
-      // First get current state
-      final getResp = await _client
-          .get(uri, headers: {'X-Token': device.agentToken})
-          .timeout(const Duration(seconds: 5));
-      if (getResp.statusCode != 200) return false;
-      final body = jsonDecode(getResp.body) as Map<String, dynamic>;
-      final currentMuted = body['muted'] == true || body['muted'] == 1;
-
-      // Toggle
-      final postResp = await _client
+      final response = await _client
           .post(
             uri,
             headers: {
               'Content-Type': 'application/json',
               'X-Token': device.agentToken,
             },
-            body: jsonEncode({'muted': !currentMuted, 'token': device.agentToken}),
+            body: jsonEncode({'muted': muted, 'token': device.agentToken}),
           )
           .timeout(const Duration(seconds: 5));
-      if (postResp.statusCode == 200) {
-        final postBody = jsonDecode(postResp.body) as Map<String, dynamic>;
-        return postBody['ok'] == true;
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return body['ok'] == true;
       }
     } catch (_) {}
     return false;
@@ -690,7 +681,9 @@ class AudioDevice {
   static String _inferDeviceType(String name) {
     final lower = name.toLowerCase();
     if (lower.contains('headphone') || lower.contains('headset') ||
-        lower.contains('earphone') || lower.contains('earbud')) return 'headphones';
+        lower.contains('earphone') || lower.contains('earbud')) {
+      return 'headphones';
+    }
     if (lower.contains('bluetooth') || lower.contains('bt ')) return 'bluetooth';
     if (lower.contains('hdmi') || lower.contains('displayport')) return 'hdmi';
     if (lower.contains('usb')) return 'usb';
@@ -1780,10 +1773,21 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                           ],
                         ),
                       );
-                      if (confirm == true && mounted) {
+                      if (confirm == true) {
                         // Unregister from the agent before removing
+                        String? unregisterError;
                         if (d.hasAgent) {
-                          await _agent.unregisterDevice(d, deviceId: _deviceId);
+                          final (ok, msg) = await _agent.unregisterDevice(d, deviceId: _deviceId);
+                          if (!ok) unregisterError = msg;
+                        }
+                        if (!mounted) return;
+                        if (unregisterError != null) {
+                          showTopNotification(
+                            context, // ignore: use_build_context_synchronously
+                            message: 'Could not unregister from PC: $unregisterError. The device may remain occupied.',
+                            icon: Icons.warning_amber_rounded,
+                            iconColor: AppColors.orange,
+                          );
                         }
                         setState(() => _devices.removeWhere((x) => x.id == d.id));
                         await _storage.saveDevices(_devices);
@@ -2062,8 +2066,19 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     );
     if (confirm == true && mounted) {
       // Unregister from the agent before removing
+      String? unregisterError;
       if (widget.device!.hasAgent) {
-        await _agent.unregisterDevice(widget.device!, deviceId: _deviceId);
+        final (ok, msg) = await _agent.unregisterDevice(widget.device!, deviceId: _deviceId);
+        if (!ok) unregisterError = msg;
+      }
+      if (!mounted) return;
+      if (unregisterError != null) {
+        showTopNotification(
+          context, // ignore: use_build_context_synchronously
+          message: 'Could not unregister from PC: $unregisterError. The device may remain occupied.',
+          icon: Icons.warning_amber_rounded,
+          iconColor: AppColors.orange,
+        );
       }
       final storage = StorageService();
       final devices = await storage.loadDevices();
@@ -2587,7 +2602,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   final _storage = StorageService();
   final _audioOutput = AudioOutputService();
   bool _busy = false;
-  bool _scanning = false;
+  final bool _scanning = false;
   bool _deviceInfoExpanded = false;
   static const _scanMessage = 'Scanning network...';
   bool? _online;
@@ -2628,9 +2643,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           DateTime.now().difference(_startedAt!).inSeconds < 60;
 
       if (mounted) {
+        bool shouldReloadAudio = false;
         setState(() {
           if (reachable) {
             // Device is reachable — clear starting state
+            shouldReloadAudio = _online != true;
             _startedAt = null;
             _online = true;
           } else if (isStarting) {
@@ -2642,6 +2659,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             _online = false;
           }
         });
+        // Reload audio when device comes back online (e.g. after reboot)
+        if (shouldReloadAudio) {
+          _audioRetries = 0;
+          _loadPcAudio();
+        }
       }
 
       if (_device.hasAgent) {
@@ -2828,7 +2850,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   /// Debounce timer for volume slider
   Timer? _volumeDebounce;
 
-  Future<void> _loadPcAudio() async {
+  /// Number of retries for loading audio after reboot (audio services may not be ready yet)
+  int _audioRetries = 0;
+  static const int _maxAudioRetries = 5;
+
+  Future<void> _loadPcAudio({bool isRetry = false}) async {
     if (!_device.hasAgent) {
       if (mounted) setState(() => _audioLoaded = true);
       return;
@@ -2837,6 +2863,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       final devices = await _audioOutput.getDevices(_device);
       final volume = await _audioOutput.getVolume(_device);
       final muted = await _audioOutput.isMuted(_device);
+      // If no devices returned after reboot, retry (audio services may not be ready)
+      if (devices.isEmpty && _audioRetries < _maxAudioRetries) {
+        _audioRetries++;
+        debugPrint('No audio devices found, retrying ($_audioRetries/$_maxAudioRetries)...');
+        await Future.delayed(const Duration(seconds: 3));
+        return _loadPcAudio(isRetry: true);
+      }
       // Find active device from the list
       final active = devices.firstWhere(
         (d) => d.isCurrentlySelected,
@@ -2853,6 +2886,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       }
     } catch (e) {
       debugPrint('Failed to load PC audio: $e');
+      // Retry on error (agent may be starting up after reboot)
+      if (_audioRetries < _maxAudioRetries) {
+        _audioRetries++;
+        debugPrint('Audio load failed, retrying ($_audioRetries/$_maxAudioRetries)...');
+        await Future.delayed(const Duration(seconds: 3));
+        return _loadPcAudio(isRetry: true);
+      }
       if (mounted) setState(() => _audioLoaded = true);
     }
   }
@@ -2860,15 +2900,23 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Future<void> _setPcVolume(int value) async {
     setState(() => _pcVolume = value);
     _volumeDebounce?.cancel();
-    _volumeDebounce = Timer(const Duration(milliseconds: 200), () {
-      _audioOutput.setVolume(_device, value);
+    _volumeDebounce = Timer(const Duration(milliseconds: 200), () async {
+      final ok = await _audioOutput.setVolume(_device, value);
+      if (!ok && mounted) {
+        // Volume set failed — reload actual state from PC
+        final actual = await _audioOutput.getVolume(_device);
+        setState(() => _pcVolume = actual);
+      }
     });
   }
 
   Future<void> _togglePcMute() async {
     final newMuted = !_pcMuted;
     setState(() => _pcMuted = newMuted);
-    await _audioOutput.toggleMute(_device);
+    final ok = await _audioOutput.setMute(_device, newMuted);
+    if (!ok && mounted) {
+      setState(() => _pcMuted = !newMuted);
+    }
   }
 
   Future<void> _switchPcAudioDevice(String deviceId) async {

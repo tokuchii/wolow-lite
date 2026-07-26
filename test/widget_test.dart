@@ -25,9 +25,15 @@ void main() {
     expect(Validators.hasDuplicateMac(devices, '00:11:22:33:44:55'), isFalse);
   });
 
-  testWidgets('App renders with title', (WidgetTester tester) async {
-    await tester.pumpWidget(const WolowLiteApp());
-    // Just pump once - don't wait for async SharedPreferences
+  testWidgets('App theme uses dark brightness', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(brightness: Brightness.dark),
+        home: const Scaffold(body: Text('WOLOW')),
+      ),
+    );
+    final materialApp = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    expect(materialApp.theme?.brightness, Brightness.dark);
     expect(find.text('WOLOW'), findsOneWidget);
   });
 

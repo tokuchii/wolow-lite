@@ -211,7 +211,7 @@ def get_audio_devices() -> dict:
 
         return {"ok": True, "devices": devices, "current": current_id}
     except Exception as e:
-        return {"ok": True, "devices": [], "current": "", "error": str(e)}
+        return {"ok": False, "devices": [], "current": "", "error": str(e)}
 
 
 def set_default_audio_device(device_id: str) -> dict:
@@ -238,16 +238,16 @@ def set_default_audio_device(device_id: str) -> dict:
 def get_volume(device_id: str = "") -> dict:
     """Get volume for a device or the default device using svcl.exe."""
     if not is_windows():
-        return {"ok": True, "volume": 50, "muted": False}
+        return {"ok": False, "volume": 50, "muted": False, "error": "not windows"}
 
     try:
         if device_id:
-            stdout, _ = _svcl("/Stdout", "/GetPercent", device_id)
+            stdout, rc = _svcl("/Stdout", "/GetPercent", device_id)
         else:
-            stdout, _ = _svcl("/Stdout", "/GetPercent", "DefaultRenderDevice")
+            stdout, rc = _svcl("/Stdout", "/GetPercent", "DefaultRenderDevice")
 
         vol_str = stdout.replace("%", "").strip()
-        volume = int(float(vol_str)) if vol_str else 50
+        volume = int(float(vol_str)) if vol_str else None
 
         # Get mute state
         if device_id:
@@ -256,9 +256,11 @@ def get_volume(device_id: str = "") -> dict:
             mute_out, _ = _svcl("/Stdout", "/GetMute", "DefaultRenderDevice")
         muted = mute_out.strip().lower() == "yes"
 
+        if volume is None:
+            return {"ok": False, "volume": 50, "muted": muted, "error": "could not parse volume"}
         return {"ok": True, "volume": min(100, max(0, volume)), "muted": muted}
-    except Exception:
-        return {"ok": True, "volume": 50, "muted": False}
+    except Exception as e:
+        return {"ok": False, "volume": 50, "muted": False, "error": str(e)}
 
 
 def set_volume(level: int, device_id: str = "") -> dict:

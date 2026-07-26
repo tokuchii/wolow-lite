@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "837630074082",
+    "project_id": "wolow-lite",
+    "storage_bucket": "wolow-lite.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:837630074082:android:ebad6f689791ffd60f52bb",
+        "android_client_info": {
+          "package_name": "com.wolow.wolow_lite"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDIPXD3GKh_bNhFCdgIK04h4ZR-CfodzlU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
