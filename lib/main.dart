@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -496,6 +497,7 @@ class Validators {
 
 class StorageService {
   static const _key = 'devices';
+  static const _deviceIdKey = 'app_device_id';
 
   Future<List<Device>> loadDevices() async {
     final prefs = await SharedPreferences.getInstance();
@@ -509,6 +511,190 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     final raw = jsonEncode(devices.map((d) => d.toJson()).toList());
     await prefs.setString(_key, raw);
+  }
+
+  /// Returns a persistent unique ID for this app instance.
+  Future<String> getDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString(_deviceIdKey);
+    if (id == null) {
+      final rng = Random.secure();
+      id = List.generate(24, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[rng.nextInt(36)]).join();
+      await prefs.setString(_deviceIdKey, id);
+    }
+    return id;
+  }
+}
+
+// ============================================================
+// AUDIO OUTPUT SERVICE (HTTP to PC Agent)
+// ============================================================
+
+class AudioOutputService {
+  final http.Client _client;
+
+  AudioOutputService({http.Client? client}) : _client = client ?? http.Client();
+
+  /// Get list of available audio output devices on the PC.
+  Future<List<AudioDevice>> getDevices(Device device) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/audio-devices');
+    try {
+      final response = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final currentId = body['current'] as String? ?? '';
+        final devices = (body['devices'] as List?)
+                ?.map((e) => AudioDevice.fromMap(Map<String, dynamic>.from(e as Map), currentId: currentId))
+                .toList() ??
+            [];
+        return devices;
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  /// Switch the PC's default audio output device.
+  /// Returns (success, error message).
+  Future<(bool, String)> setActiveDevice(Device device, String deviceId) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/audio-device');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Token': device.agentToken,
+            },
+            body: jsonEncode({'device_id': deviceId, 'token': device.agentToken}),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) return (true, '');
+        return (false, body['error'] as String? ?? 'switch failed');
+      }
+    } catch (_) {}
+    return (false, 'cannot reach PC agent');
+  }
+
+  /// Get current master volume (0-100) from the PC.
+  Future<int> getVolume(Device device) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/volume');
+    try {
+      final response = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return body['volume'] as int? ?? 50;
+      }
+    } catch (_) {}
+    return 50;
+  }
+
+  /// Set master volume (0-100) on the PC.
+  Future<bool> setVolume(Device device, int level) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/volume');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Token': device.agentToken,
+            },
+            body: jsonEncode({'level': level, 'token': device.agentToken}),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return body['ok'] == true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// Toggle mute on the PC.
+  Future<bool> toggleMute(Device device) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/volume');
+    try {
+      // First get current state
+      final getResp = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (getResp.statusCode != 200) return false;
+      final body = jsonDecode(getResp.body) as Map<String, dynamic>;
+      final currentMuted = body['muted'] == true || body['muted'] == 1;
+
+      // Toggle
+      final postResp = await _client
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Token': device.agentToken,
+            },
+            body: jsonEncode({'muted': !currentMuted, 'token': device.agentToken}),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (postResp.statusCode == 200) {
+        final postBody = jsonDecode(postResp.body) as Map<String, dynamic>;
+        return postBody['ok'] == true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// Check if audio is muted on the PC.
+  Future<bool> isMuted(Device device) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/volume');
+    try {
+      final response = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return body['muted'] == true || body['muted'] == 1;
+      }
+    } catch (_) {}
+    return false;
+  }
+}
+
+class AudioDevice {
+  final String id;
+  final String name;
+  final String type; // speaker, headphones, bluetooth, hdmi, usb
+  final bool isCurrentlySelected;
+
+  const AudioDevice({
+    required this.id,
+    required this.name,
+    required this.type,
+    this.isCurrentlySelected = false,
+  });
+
+  factory AudioDevice.fromMap(Map<String, dynamic> map, {String? currentId}) {
+    final id = map['id'] as String? ?? '';
+    final name = map['name'] as String? ?? 'Unknown';
+    return AudioDevice(
+      id: id,
+      name: name,
+      type: _inferDeviceType(name),
+      isCurrentlySelected: map['is_default'] == true || id == currentId,
+    );
+  }
+
+  static String _inferDeviceType(String name) {
+    final lower = name.toLowerCase();
+    if (lower.contains('headphone') || lower.contains('headset') ||
+        lower.contains('earphone') || lower.contains('earbud')) return 'headphones';
+    if (lower.contains('bluetooth') || lower.contains('bt ')) return 'bluetooth';
+    if (lower.contains('hdmi') || lower.contains('displayport')) return 'hdmi';
+    if (lower.contains('usb')) return 'usb';
+    return 'speaker';
   }
 }
 
@@ -590,6 +776,8 @@ class AgentService {
       return (false, 'Cannot connect — is the agent running on port ${device.agentPort}?');
     } on TimeoutException {
       return (false, 'Connection timed out');
+    } on FormatException {
+      return (false, 'Agent returned invalid response — is the agent running?');
     } catch (e) {
       return (false, 'Error: $e');
     }
@@ -618,6 +806,96 @@ class AgentService {
       return (false, 'Cannot connect — is the agent running?');
     } on TimeoutException {
       return (false, 'Connection timed out');
+    } on FormatException {
+      return (false, 'Agent returned invalid response — is the agent running?');
+    } catch (e) {
+      return (false, 'Error: $e');
+    }
+  }
+
+  /// Register this app instance as the owner of the device.
+  /// Returns (success, message). On 409, the device is already owned by another app.
+  Future<(bool, String)> registerDevice(
+    Device device, {
+    required String deviceId,
+    required String deviceName,
+  }) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/register');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'token': device.agentToken,
+              'device_id': deviceId,
+              'device_name': deviceName,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 409) {
+        try {
+          final body = jsonDecode(response.body) as Map<String, dynamic>;
+          final ownerName = body['owner_device_name'] as String? ?? 'another device';
+          return (false, 'This PC is already registered to $ownerName');
+        } catch (_) {
+          return (false, 'This PC is already registered to another device');
+        }
+      }
+      // 404/405 = old agent without /register endpoint
+      if (response.statusCode == 404 || response.statusCode == 405) {
+        return (false, 'Agent outdated — rerun setup.bat on your PC to update');
+      }
+      if (response.statusCode != 200) {
+        return (false, 'Agent returned ${response.statusCode}');
+      }
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (body['ok'] == true) {
+        return (true, 'registered');
+      }
+      return (false, (body['error'] as String?) ?? 'registration failed');
+    } on SocketException {
+      return (false, 'Cannot connect to agent');
+    } on TimeoutException {
+      return (false, 'Connection timed out');
+    } on FormatException {
+      return (false, 'Agent returned invalid response — is the agent running?');
+    } catch (e) {
+      return (false, 'Error: $e');
+    }
+  }
+
+  /// Unregister this app instance from the device.
+  Future<(bool, String)> unregisterDevice(
+    Device device, {
+    required String deviceId,
+  }) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/unregister');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'token': device.agentToken,
+              'device_id': deviceId,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) {
+        return (false, 'Agent returned ${response.statusCode}');
+      }
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (body['ok'] == true) {
+        return (true, 'unregistered');
+      }
+      return (false, (body['error'] as String?) ?? 'unregister failed');
+    } on SocketException {
+      return (false, 'Cannot connect to agent');
+    } on TimeoutException {
+      return (false, 'Connection timed out');
+    } on FormatException {
+      return (false, 'Agent returned invalid response — is the agent running?');
     } catch (e) {
       return (false, 'Error: $e');
     }
@@ -1168,6 +1446,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   bool _loading = true;
   String? _wakeTarget;
   Timer? _refreshTimer;
+  String _deviceId = '';
 
   /// Devices that are booting up after WoL was sent (60 second window)
   final Map<String, DateTime> _starting = {};
@@ -1190,8 +1469,10 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
 
   Future<void> _load() async {
     final devices = await _storage.loadDevices();
+    final deviceId = await _storage.getDeviceId();
     setState(() {
       _devices = devices;
+      _deviceId = deviceId;
       _loading = false;
     });
     _checkAll();
@@ -1276,6 +1557,35 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
         }
         return;
       }
+
+      // Register with the agent to claim ownership (only if agent is configured)
+      if (newDevice.hasAgent) {
+        if (mounted) {
+          showTopNotification(
+            context,
+            message: 'Registering with PC...',
+            icon: Icons.sync_rounded,
+            iconColor: AppColors.blue,
+          );
+        }
+        final (ok, msg) = await _agent.registerDevice(
+          newDevice,
+          deviceId: _deviceId,
+          deviceName: newDevice.name,
+        );
+        if (!ok) {
+          if (mounted) {
+            showTopNotification(
+              context,
+              message: msg,
+              icon: Icons.error_outline_rounded,
+              iconColor: AppColors.red,
+            );
+          }
+          return;
+        }
+      }
+
       setState(() => _devices.add(newDevice));
       await _storage.saveDevices(_devices);
       _checkDevice(newDevice);
@@ -1471,6 +1781,10 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                         ),
                       );
                       if (confirm == true && mounted) {
+                        // Unregister from the agent before removing
+                        if (d.hasAgent) {
+                          await _agent.unregisterDevice(d, deviceId: _deviceId);
+                        }
                         setState(() => _devices.removeWhere((x) => x.id == d.id));
                         await _storage.saveDevices(_devices);
                       }
@@ -1617,12 +1931,16 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   bool _obscureToken = true;
   bool _scanning = false;
   String _scanMessage = 'Scanning network...';
+  final _agent = AgentService();
+  final _storage = StorageService();
+  String _deviceId = '';
 
   bool get _isEditing => widget.device != null;
 
   @override
   void initState() {
     super.initState();
+    _storage.getDeviceId().then((id) => _deviceId = id);
     if (widget.device != null) {
       final d = widget.device!;
       _nameCtrl.text = d.name;
@@ -1633,8 +1951,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       _agentPortCtrl.text = d.agentPort.toString();
       _agentTokenCtrl.text = d.agentToken;
     } else {
-      _subnetCtrl.text = '255.255.255.0';
-      _agentPortCtrl.text = '8220';
+      // Fields left empty — populated by "Scan Network" or user input
     }
   }
 
@@ -1744,6 +2061,10 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       ),
     );
     if (confirm == true && mounted) {
+      // Unregister from the agent before removing
+      if (widget.device!.hasAgent) {
+        await _agent.unregisterDevice(widget.device!, deviceId: _deviceId);
+      }
       final storage = StorageService();
       final devices = await storage.loadDevices();
       devices.removeWhere((d) => d.id == widget.device!.id);
@@ -2011,19 +2332,25 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                             ),
                           ),
                         ),
-                        Text(
-                          broadcast,
-                          style: const TextStyle(
-                            color: AppColors.green,
-                            fontSize: 14,
+                        Flexible(
+                          child: Text(
+                            broadcast,
+                            style: const TextStyle(
+                              color: AppColors.green,
+                              fontSize: 14,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         const SizedBox(width: 8),
-                        const Text(
-                          '(auto-derived)',
-                          style: TextStyle(
-                            color: AppColors.tertiaryLabel,
-                            fontSize: 12,
+                        const Flexible(
+                          child: Text(
+                            '(auto-derived)',
+                            style: TextStyle(
+                              color: AppColors.tertiaryLabel,
+                              fontSize: 12,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -2258,8 +2585,10 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   final _agent = AgentService();
   final _ping = PingService();
   final _storage = StorageService();
+  final _audioOutput = AudioOutputService();
   bool _busy = false;
   bool _scanning = false;
+  bool _deviceInfoExpanded = false;
   static const _scanMessage = 'Scanning network...';
   bool? _online;
   AgentStatus? _agentStatus;
@@ -2275,6 +2604,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     super.initState();
     _device = widget.device;
     _checkOnline();
+    _loadPcAudio();
     _refreshTimer = Timer.periodic(
       const Duration(seconds: 5),
       (_) => _checkOnline(),
@@ -2349,11 +2679,37 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   Future<void> _handleAgent(String action) async {
+    // Show confirmation dialog
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.card,
+        title: Text(
+          _actionTitle(action),
+          style: const TextStyle(color: AppColors.label),
+        ),
+        content: Text(
+          _actionMessage(action),
+          style: const TextStyle(color: AppColors.secondaryLabel),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.secondaryLabel)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(_actionButtonLabel(action), style: TextStyle(color: _actionColor(action))),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+
     setState(() => _busy = true);
     final (ok, msg) = await _agent.sendAction(_device, action);
     setState(() {
       _busy = false;
-      // Mark as starting for reboot/shutdown actions
       if (ok && (action == 'reboot' || action == 'shutdown')) {
         _startedAt = DateTime.now();
         _online = false;
@@ -2370,133 +2726,69 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     _checkOnline();
   }
 
-  Future<void> _scanForAgent() async {
-    setState(() {
-      _busy = true;
-      _scanning = true;
-    });
+  String _actionTitle(String action) {
+    switch (action) {
+      case 'reboot': return 'Reboot PC?';
+      case 'shutdown': return 'Shutdown PC?';
+      case 'sleep': return 'Sleep PC?';
+      case 'lock': return 'Lock PC?';
+      default: return 'Confirm Action';
+    }
+  }
 
-    try {
-      // Check if on local network first
-      final onLocal = await NetworkHelper.isOnLocalNetwork();
-      if (!onLocal && mounted) {
-        setState(() {
-          _busy = false;
-          _scanning = false;
-        });
-        showTopNotification(
-          context,
-          message: 'Not on a local network — connect to the same WiFi as your PC',
-          icon: Icons.wifi_off_rounded,
-          iconColor: AppColors.orange,
-        );
-        return;
-      }
+  String _actionMessage(String action) {
+    switch (action) {
+      case 'reboot': return 'This will restart ${_device.name}. All unsaved work will be lost.';
+      case 'shutdown': return 'This will turn off ${_device.name}. All unsaved work will be lost.';
+      case 'sleep': return 'This will put ${_device.name} to sleep.';
+      case 'lock': return 'This will lock the screen on ${_device.name}.';
+      default: return 'Are you sure?';
+    }
+  }
 
-      final discovery = DiscoveryService();
-      final agents = await discovery.discover(
-        deviceIp: _device.ipAddress,
-        timeoutMs: 4000,
-      );
+  String _actionButtonLabel(String action) {
+    switch (action) {
+      case 'reboot': return 'Reboot';
+      case 'shutdown': return 'Shutdown';
+      case 'sleep': return 'Sleep';
+      case 'lock': return 'Lock';
+      default: return 'Confirm';
+    }
+  }
 
-      if (agents.isEmpty) {
-        setState(() {
-          _busy = false;
-          _scanning = false;
-        });
-        if (mounted) {
-          showTopNotification(
-            context,
-            message: 'Agent not found — is it running?',
-            icon: Icons.search_off_rounded,
-            iconColor: AppColors.orange,
-          );
-        }
-        return;
-      }
+  Color _actionColor(String action) {
+    switch (action) {
+      case 'reboot': return AppColors.orange;
+      case 'shutdown': return AppColors.red;
+      case 'sleep': return AppColors.blue;
+      case 'lock': return AppColors.secondaryLabel;
+      default: return AppColors.blue;
+    }
+  }
 
-      // Filter to agents on the same subnet
-      final sameSubnet = agents.where((a) => _device.isOnSameSubnet(a.ip)).toList();
-      final list = sameSubnet.isNotEmpty ? sameSubnet : agents;
+  IconData _getAudioDeviceIcon(String type) {
+    switch (type) {
+      case 'headphones': return Icons.headphones_rounded;
+      case 'bluetooth': return Icons.bluetooth_rounded;
+      case 'hdmi': return Icons.tv_rounded;
+      case 'speaker': return Icons.speaker_rounded;
+      default: return Icons.speaker_rounded;
+    }
+  }
 
-      if (!mounted) return;
-
-      // Show picker dialog
-      final selected = await showModalBottomSheet<DiscoveredAgent>(
-        context: context,
-        backgroundColor: Colors.transparent,
-        builder: (_) => _AgentPickerSheet(agents: list),
-      );
-
-      if (selected != null && mounted) {
-        final agent = await discovery.enrichFromStatus(selected);
-        // Update device with discovered agent info
-        final updated = Device(
-          id: _device.id,
-          name: agent.hostname,
-          mac: agent.mac.isNotEmpty ? agent.mac : _device.mac,
-          ipAddress: agent.ip,
-          subnetMask: _device.subnetMask,
-          port: _device.port,
-          agentPort: agent.port,
-          agentToken: agent.token ?? _device.agentToken,
-        );
-        setState(() {
-          _device = updated;
-          _busy = false;
-          _scanning = false;
-        });
-
-        // Save
-        final devices = await _storage.loadDevices();
-        final idx = devices.indexWhere((d) => d.id == updated.id);
-        if (idx != -1) {
-          devices[idx] = updated;
-          await _storage.saveDevices(devices);
-        }
-
-        if (mounted) {
-          if (updated.agentToken.isEmpty) {
-            showTopNotification(
-              context,
-              message:
-                  'PC found but token missing — rerun setup.bat on your PC, then scan again',
-              icon: Icons.warning_amber_rounded,
-              iconColor: AppColors.orange,
-            );
-          } else {
-            showTopNotification(
-              context,
-              message: 'Connected to ${agent.hostname} (${agent.platform})',
-              icon: Icons.check_circle_outline_rounded,
-              iconColor: AppColors.green,
-            );
-          }
-        }
-      } else {
-        setState(() {
-          _busy = false;
-          _scanning = false;
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _busy = false;
-        _scanning = false;
-      });
-      if (mounted) {
-        showTopNotification(
-          context,
-          message: 'Scan failed: $e',
-          icon: Icons.error_outline_rounded,
-          iconColor: AppColors.red,
-        );
-      }
+  String _getAudioDeviceSubtitle(String type) {
+    switch (type) {
+      case 'headphones': return 'Wired';
+      case 'bluetooth': return 'Bluetooth';
+      case 'hdmi': return 'HDMI / DisplayPort';
+      case 'speaker': return 'Speaker';
+      default: return 'Audio device';
     }
   }
 
   Future<void> _editDevice() async {
     final existingDevices = await _storage.loadDevices();
+    if (!mounted) return;
     final updated = await Navigator.push<Device>(
       context,
       MaterialPageRoute(
@@ -2523,6 +2815,73 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       if (!exists && mounted) {
         Navigator.pop(context);
       }
+    }
+  }
+
+  // PC audio state via HTTP to agent
+  bool _audioLoaded = false;
+  List<AudioDevice> _pcAudioDevices = [];
+  String _activePcAudioDeviceId = '';
+  int _pcVolume = 50;
+  bool _pcMuted = false;
+
+  /// Debounce timer for volume slider
+  Timer? _volumeDebounce;
+
+  Future<void> _loadPcAudio() async {
+    if (!_device.hasAgent) {
+      if (mounted) setState(() => _audioLoaded = true);
+      return;
+    }
+    try {
+      final devices = await _audioOutput.getDevices(_device);
+      final volume = await _audioOutput.getVolume(_device);
+      final muted = await _audioOutput.isMuted(_device);
+      // Find active device from the list
+      final active = devices.firstWhere(
+        (d) => d.isCurrentlySelected,
+        orElse: () => devices.isNotEmpty ? devices.first : AudioDevice(id: '', name: '', type: 'speaker'),
+      );
+      if (mounted) {
+        setState(() {
+          _pcAudioDevices = devices;
+          _activePcAudioDeviceId = active.id;
+          _pcVolume = volume;
+          _pcMuted = muted;
+          _audioLoaded = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load PC audio: $e');
+      if (mounted) setState(() => _audioLoaded = true);
+    }
+  }
+
+  Future<void> _setPcVolume(int value) async {
+    setState(() => _pcVolume = value);
+    _volumeDebounce?.cancel();
+    _volumeDebounce = Timer(const Duration(milliseconds: 200), () {
+      _audioOutput.setVolume(_device, value);
+    });
+  }
+
+  Future<void> _togglePcMute() async {
+    final newMuted = !_pcMuted;
+    setState(() => _pcMuted = newMuted);
+    await _audioOutput.toggleMute(_device);
+  }
+
+  Future<void> _switchPcAudioDevice(String deviceId) async {
+    final (ok, error) = await _audioOutput.setActiveDevice(_device, deviceId);
+    if (ok && mounted) {
+      await _loadPcAudio();
+    } else if (!ok && mounted && error.isNotEmpty) {
+      showTopNotification(
+        context,
+        message: error,
+        icon: Icons.error_outline_rounded,
+        iconColor: AppColors.red,
+      );
     }
   }
 
@@ -2599,78 +2958,308 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               ],
             ),
 
-            // Actions
+            // Actions grid + Volume
             if (d.hasAgent)
-              IOSSection(
-                header: 'ACTIONS',
-                children: [
-                  IOSActionButton(
-                    icon: Icons.restart_alt_rounded,
-                    iconColor: AppColors.orange,
-                    label: 'Reboot',
-                    onTap: _busy ? null : () => _handleAgent('reboot'),
-                  ),
-                  IOSActionButton(
-                    icon: Icons.power_settings_new_rounded,
-                    iconColor: AppColors.red,
-                    label: 'Shutdown',
-                    onTap: _busy ? null : () => _handleAgent('shutdown'),
-                  ),
-                  IOSActionButton(
-                    icon: Icons.bedtime_rounded,
-                    iconColor: AppColors.blue,
-                    label: 'Sleep',
-                    onTap: _busy ? null : () => _handleAgent('sleep'),
-                  ),
-                  IOSActionButton(
-                    icon: Icons.lock_rounded,
-                    iconColor: AppColors.secondaryLabel,
-                    label: 'Lock',
-                    onTap: _busy ? null : () => _handleAgent('lock'),
-                  ),
-                ],
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(left: 16, bottom: 8),
+                      child: Text(
+                        'ACTIONS',
+                        style: TextStyle(
+                          color: AppColors.secondaryLabel,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w400,
+                          letterSpacing: -0.1,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.card,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        children: [
+                          // 4-column icon grid
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                _ActionGridItem(
+                                  icon: Icons.restart_alt_rounded,
+                                  iconColor: AppColors.orange,
+                                  label: 'Reboot',
+                                  onTap: _busy ? null : () => _handleAgent('reboot'),
+                                ),
+                                _ActionGridItem(
+                                  icon: Icons.power_settings_new_rounded,
+                                  iconColor: AppColors.red,
+                                  label: 'Shutdown',
+                                  onTap: _busy ? null : () => _handleAgent('shutdown'),
+                                ),
+                                _ActionGridItem(
+                                  icon: Icons.bedtime_rounded,
+                                  iconColor: AppColors.blue,
+                                  label: 'Sleep',
+                                  onTap: _busy ? null : () => _handleAgent('sleep'),
+                                ),
+                                _ActionGridItem(
+                                  icon: Icons.lock_rounded,
+                                  iconColor: AppColors.secondaryLabel,
+                                  label: 'Lock',
+                                  onTap: _busy ? null : () => _handleAgent('lock'),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const Divider(height: 1, color: AppColors.separator, indent: 16, endIndent: 16),
+
+                          // Volume
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(
+                                      _pcMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                                      color: _pcMuted ? AppColors.red : AppColors.secondaryLabel,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'Volume',
+                                      style: TextStyle(color: AppColors.label, fontSize: 15),
+                                    ),
+                                    const Spacer(),
+                                    GestureDetector(
+                                      onTap: _togglePcMute,
+                                      child: Icon(
+                                        _pcMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                                        color: _pcMuted ? AppColors.red : AppColors.tertiaryLabel,
+                                        size: 20,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      _pcMuted ? 'Muted' : '$_pcVolume%',
+                                      style: TextStyle(
+                                        color: _pcMuted ? AppColors.red : AppColors.secondaryLabel,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    activeTrackColor: AppColors.green,
+                                    inactiveTrackColor: AppColors.separator,
+                                    thumbColor: AppColors.green,
+                                    overlayColor: AppColors.green.withValues(alpha: 0.1),
+                                    trackHeight: 3,
+                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                                  ),
+                                  child: Slider(
+                                    value: _pcMuted ? 0 : _pcVolume.toDouble(),
+                                    min: 0,
+                                    max: 100,
+                                    onChanged: (v) => setState(() => _pcVolume = v.round()),
+                                    onChangeEnd: (v) {
+                                      if (_pcMuted) _togglePcMute();
+                                      _setPcVolume(v.round());
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          // Audio device selector — Windows 11 style
+                          if (_audioLoaded && _pcAudioDevices.isNotEmpty) ...[
+                            const Divider(height: 1, color: AppColors.separator, indent: 16, endIndent: 16),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.surround_sound_rounded, color: AppColors.secondaryLabel, size: 18),
+                                      const SizedBox(width: 8),
+                                      const Text(
+                                        'Output device',
+                                        style: TextStyle(color: AppColors.label, fontSize: 15, fontWeight: FontWeight.w500),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  ..._pcAudioDevices.map((dev) {
+                                    final isCurrent = dev.id == _activePcAudioDeviceId;
+                                    final devIcon = _getAudioDeviceIcon(dev.type);
+                                    final devSubtitle = _getAudioDeviceSubtitle(dev.type);
+
+                                    return GestureDetector(
+                                      onTap: isCurrent ? null : () => _switchPcAudioDevice(dev.id),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                                        margin: const EdgeInsets.only(bottom: 4),
+                                        decoration: BoxDecoration(
+                                          color: isCurrent
+                                              ? AppColors.blue.withValues(alpha: 0.12)
+                                              : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            // Device type icon
+                                            Container(
+                                              width: 32,
+                                              height: 32,
+                                              decoration: BoxDecoration(
+                                                color: isCurrent
+                                                    ? AppColors.blue.withValues(alpha: 0.15)
+                                                    : AppColors.separator.withValues(alpha: 0.3),
+                                                borderRadius: BorderRadius.circular(8),
+                                              ),
+                                              child: Icon(devIcon, color: isCurrent ? AppColors.blue : AppColors.secondaryLabel, size: 18),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            // Device name + subtitle
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    dev.name.length > 28 ? '${dev.name.substring(0, 25)}...' : dev.name,
+                                                    style: TextStyle(
+                                                      color: isCurrent ? AppColors.blue : AppColors.label,
+                                                      fontSize: 14,
+                                                      fontWeight: isCurrent ? FontWeight.w500 : FontWeight.w400,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                  const SizedBox(height: 2),
+                                                  Text(
+                                                    devSubtitle,
+                                                    style: TextStyle(
+                                                      color: isCurrent
+                                                          ? AppColors.blue.withValues(alpha: 0.7)
+                                                          : AppColors.tertiaryLabel,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            // Check mark
+                                            if (isCurrent)
+                                              const Icon(Icons.check_circle_rounded, color: AppColors.blue, size: 18),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  }),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
 
-            // Device info
-            IOSSection(
-              header: 'DEVICE INFO',
-              children: [
-                _InfoTile(label: 'MAC', value: _maskValue(d.mac)),
-                _InfoTile(label: 'IP', value: _maskValue(d.ipAddress)),
-                _InfoTile(label: 'Subnet', value: _maskValue(d.subnetMask)),
-                _InfoTile(
-                  label: 'WoL',
-                  value: _maskValue('${d.broadcastAddress}:${d.port}'),
-                ),
-                if (d.hasAgent) ...[
-                  _InfoTile(
-                    label: 'Agent',
-                    value: _maskValue('${d.ipAddress}:${d.agentPort}'),
+            // Device info (collapsible)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16, bottom: 8),
+                    child: GestureDetector(
+                      onTap: () => setState(() => _deviceInfoExpanded = !_deviceInfoExpanded),
+                      behavior: HitTestBehavior.opaque,
+                      child: Row(
+                        children: [
+                          const Text(
+                            'DEVICE INFO',
+                            style: TextStyle(
+                              color: AppColors.secondaryLabel,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w400,
+                              letterSpacing: -0.1,
+                            ),
+                          ),
+                          const Spacer(),
+                          Icon(
+                            _deviceInfoExpanded
+                                ? Icons.keyboard_arrow_up_rounded
+                                : Icons.keyboard_arrow_down_rounded,
+                            color: AppColors.secondaryLabel,
+                            size: 20,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                  _InfoTile(
-                    label: 'Token',
-                    value: _maskValue(d.agentToken),
-                    showSeparator: _agentStatus == null,
-                  ),
+                  if (_deviceInfoExpanded)
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.card,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        children: [
+                          _InfoTile(label: 'MAC', value: _maskValue(d.mac)),
+                          _InfoTile(label: 'IP', value: _maskValue(d.ipAddress)),
+                          _InfoTile(label: 'Subnet', value: _maskValue(d.subnetMask)),
+                          _InfoTile(
+                            label: 'WoL',
+                            value: _maskValue('${d.broadcastAddress}:${d.port}'),
+                          ),
+                          if (d.hasAgent) ...[
+                            _InfoTile(
+                              label: 'Agent',
+                              value: _maskValue('${d.ipAddress}:${d.agentPort}'),
+                            ),
+                            _InfoTile(
+                              label: 'Token',
+                              value: _maskValue(d.agentToken),
+                              showSeparator: _agentStatus == null,
+                            ),
+                          ],
+                          if (d.hasAgent && _agentStatus != null) ...[
+                            _InfoTile(
+                              label: 'Host',
+                              value: _agentStatus!.hostname,
+                            ),
+                            _InfoTile(
+                              label: 'OS',
+                              value: _agentStatus!.platform,
+                              showSeparator: false,
+                            ),
+                          ],
+                          if (!d.hasAgent)
+                            const _InfoTile(
+                              label: 'Agent',
+                              value: '(not configured)',
+                              showSeparator: false,
+                            ),
+                        ],
+                      ),
+                    ),
                 ],
-                if (d.hasAgent && _agentStatus != null) ...[
-                  _InfoTile(
-                    label: 'Host',
-                    value: _agentStatus!.hostname,
-                  ),
-                  _InfoTile(
-                    label: 'OS',
-                    value: _agentStatus!.platform,
-                    showSeparator: false,
-                  ),
-                ],
-                if (!d.hasAgent)
-                  const _InfoTile(
-                    label: 'Agent',
-                    value: '(not configured)',
-                    showSeparator: false,
-                  ),
-              ],
+              ),
             ),
 
             // Agent setup hint (when no token configured)
@@ -2746,6 +3335,57 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           ),
       ],
     ),
+    );
+  }
+}
+
+// ============================================================
+// ACTION GRID ITEM
+// ============================================================
+
+class _ActionGridItem extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String label;
+  final VoidCallback? onTap;
+
+  const _ActionGridItem({
+    required this.icon,
+    required this.iconColor,
+    required this.label,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: iconColor.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, color: iconColor, size: 24),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: onTap != null ? AppColors.label : AppColors.tertiaryLabel,
+                fontSize: 12,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

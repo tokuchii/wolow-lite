@@ -4,8 +4,10 @@ WOLOW Lite PC Agent
 Lightweight HTTP server that runs on the target PC and executes remote commands.
 
 Endpoints:
-  POST /action    - Execute a command (JSON body: {"action": "...", "token": "..."})
-  GET  /status    - Health check (no auth required)
+  POST /action     - Execute a command (JSON body: {"action": "...", "token": "..."})
+  GET  /status     - Health check (no auth required)
+  POST /register   - Register an app instance as the owner (requires token)
+  POST /unregister - Unregister the owner (requires token + matching device_id)
 
 UDP Discovery:
   Listens on UDP port 8221 for "WOLOW_DISCOVER" packets.
@@ -25,7 +27,10 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request
 
-from actions import get_status, get_mac_address, hibernate, lock, reboot, shutdown, sleep
+from actions import (
+    get_status, get_mac_address, hibernate, lock, reboot, shutdown, sleep,
+    get_audio_devices, get_volume, set_volume, set_mute, set_default_audio_device,
+)
 from config import load_config
 
 cfg = load_config()
@@ -56,12 +61,51 @@ ACTION_MAP = {
     "lock": lock,
 }
 
+# ---------------------------------------------------------------------------
+# Owner persistence
+# ---------------------------------------------------------------------------
+
+OWNER_FILE = Path(__file__).parent / "owner.json"
+_owner_lock = threading.Lock()
+
+
+def _load_owner() -> dict | None:
+    """Load the current owner from disk. Returns None if no owner."""
+    if not OWNER_FILE.exists():
+        return None
+    try:
+        with open(OWNER_FILE, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_owner(device_id: str, device_name: str):
+    """Persist the owner to disk."""
+    with _owner_lock:
+        with open(OWNER_FILE, "w") as f:
+            json.dump({"device_id": device_id, "device_name": device_name}, f)
+    log.info("Owner registered: %s (%s)", device_id, device_name)
+
+
+def _clear_owner():
+    """Remove the owner file."""
+    with _owner_lock:
+        if OWNER_FILE.exists():
+            OWNER_FILE.unlink()
+    log.info("Owner cleared")
+
 
 def require_token(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Check JSON body first, then X-Token header, then query param
         data = request.get_json(silent=True) or {}
         token = data.get("token", "")
+        if not token:
+            token = request.headers.get("X-Token", "")
+        if not token:
+            token = request.args.get("token", "")
         if token != EXPECTED_TOKEN:
             log.warning("Unauthorized request from %s", request.remote_addr)
             return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -73,7 +117,58 @@ def require_token(f):
 def status():
     result = get_status()
     result["token"] = EXPECTED_TOKEN
+    owner = _load_owner()
+    if owner:
+        result["owner_device_id"] = owner["device_id"]
+        result["owner_device_name"] = owner["device_name"]
     return jsonify(result)
+
+
+@app.route("/register", methods=["POST"])
+@require_token
+def register():
+    data = request.get_json(silent=True) or {}
+    device_id = data.get("device_id", "").strip()
+    device_name = data.get("device_name", "").strip()
+
+    if not device_id:
+        return jsonify({"ok": False, "error": "device_id is required"}), 400
+
+    owner = _load_owner()
+    if owner and owner["device_id"] != device_id:
+        log.warning(
+            "Registration rejected: device %s tried to claim, but %s already owns",
+            device_id, owner["device_id"],
+        )
+        return jsonify({
+            "ok": False,
+            "error": "already_registered",
+            "owner_device_name": owner["device_name"],
+        }), 409
+
+    _save_owner(device_id, device_name or device_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/unregister", methods=["POST"])
+@require_token
+def unregister():
+    data = request.get_json(silent=True) or {}
+    device_id = data.get("device_id", "").strip()
+
+    if not device_id:
+        return jsonify({"ok": False, "error": "device_id is required"}), 400
+
+    owner = _load_owner()
+    if owner and owner["device_id"] != device_id:
+        return jsonify({
+            "ok": False,
+            "error": "only_owner_can_unregister",
+            "owner_device_name": owner["device_name"],
+        }), 403
+
+    _clear_owner()
+    return jsonify({"ok": True})
 
 
 @app.route("/action", methods=["POST"])
@@ -92,6 +187,58 @@ def do_action():
     except Exception as e:
         log.error("Action '%s' failed: %s", action, e)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Audio Control
+# ---------------------------------------------------------------------------
+
+@app.route("/audio-devices", methods=["GET"])
+@require_token
+def audio_devices():
+    log.info("Audio devices request from %s", request.remote_addr)
+    result = get_audio_devices()
+    log.info("Audio devices: %d found", len(result.get("devices", [])))
+    return jsonify(result)
+
+
+@app.route("/volume", methods=["GET", "POST"])
+@require_token
+def volume():
+    log.info("Volume %s from %s", request.method, request.remote_addr)
+    if request.method == "GET":
+        device_id = request.args.get("device_id", "")
+        result = get_volume(device_id)
+        log.info("Volume result: %s", result)
+        return jsonify(result)
+    data = request.get_json(silent=True) or {}
+    level = data.get("level")
+    device_id = data.get("device_id", "")
+    muted = data.get("muted")
+    if muted is not None:
+        result = set_mute(bool(muted), device_id)
+        log.info("Set mute to %s: %s", muted, result)
+        return jsonify(result)
+    if level is None:
+        return jsonify({"ok": False, "error": "level is required"}), 400
+    try:
+        level = int(level)
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "level must be an integer"}), 400
+    result = set_volume(level, device_id)
+    log.info("Set volume to %s: %s", level, result)
+    return jsonify(result)
+
+
+@app.route("/audio-device", methods=["POST"])
+@require_token
+def switch_audio_device():
+    data = request.get_json(silent=True) or {}
+    device_id = data.get("device_id", "").strip()
+    if not device_id:
+        return jsonify({"ok": False, "error": "device_id is required"}), 400
+    return jsonify(set_default_audio_device(device_id))
 
 
 # ---------------------------------------------------------------------------

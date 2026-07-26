@@ -14,13 +14,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo  [1/2] Configuring WinRM and firewall rules...
-rem This is the only PowerShell process launched by this setup script.
+echo  [1/2] Configuring firewall rules...
+rem WinRM is optional — agent uses Flask on port 8220, not WinRM
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_winrm.ps1"
-if errorlevel 1 (
-    echo  [!] WinRM configuration failed.
-    exit /b 1
-)
+rem Continue even if WinRM setup had issues — agent works via HTTP
 
 echo  [2/2] Installing the background agent...
 call "%~dp0pc_agent\setup.bat"
