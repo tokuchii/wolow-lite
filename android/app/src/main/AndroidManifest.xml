@@ -13,10 +13,13 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+    <!-- Microphone for voice commands -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="wolow_lite"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

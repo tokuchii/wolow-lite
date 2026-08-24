@@ -1,2 +1,9 @@
 flask>=3.0.0
+flask-cors>=4.0.0
 pyyaml>=6.0
+rapidfuzz>=3.0.0
+psutil>=5.9.0
+
+# Optional (Windows only — for app icon extraction):
+# pywin32>=306
+# Pillow>=10.0.0

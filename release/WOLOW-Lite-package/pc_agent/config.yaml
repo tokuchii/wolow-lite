@@ -1,6 +1,0 @@
-logging:
-  level: INFO
-server:
-  host: 0.0.0.0
-  port: 8220
-  token: yn_92AJU8WaHiKXL5yUiIPt-WvaT4NApwmJ7sVqwXUw

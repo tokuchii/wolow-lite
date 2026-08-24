@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -29,16 +30,20 @@ void main() {
 
 class AppColors {
   static const bg = Color(0xFF000000);
+  static const elevatedBg = Color(0xFF1C1C1E);
   static const card = Color(0xFF1C1C1E);
   static const cardLight = Color(0xFF2C2C2E);
   static const separator = Color(0xFF38383A);
-  static const label = Color(0xFFE5E5E5);
-  static const secondaryLabel = Color(0xFF8E8E93);
+  static const label = Color(0xFFFFFFFF);
+  static const secondaryLabel = Color(0xFF98989D);
   static const tertiaryLabel = Color(0xFF636366);
+  static const quaternaryLabel = Color(0xFF48484A);
   static const blue = Color(0xFF0A84FF);
   static const green = Color(0xFF30D158);
   static const red = Color(0xFFFF453A);
   static const orange = Color(0xFFFF9F0A);
+  static const teal = Color(0xFF64D2FF);
+  static const indigo = Color(0xFF5E5CE6);
 }
 
 // ============================================================
@@ -150,7 +155,7 @@ class _TopNotificationBannerState extends State<_TopNotificationBanner>
                     Icon(
                       widget.icon,
                       color: widget.iconColor ?? AppColors.blue,
-                      size: 20,
+                      size: 18,
                     ),
                     const SizedBox(width: 10),
                   ],
@@ -159,8 +164,9 @@ class _TopNotificationBannerState extends State<_TopNotificationBanner>
                       widget.message,
                       style: const TextStyle(
                         color: AppColors.label,
-                        fontSize: 14,
+                        fontSize: 13,
                         fontWeight: FontWeight.w500,
+                        letterSpacing: -0.2,
                       ),
                     ),
                   ),
@@ -170,72 +176,6 @@ class _TopNotificationBannerState extends State<_TopNotificationBanner>
           ),
         ),
       ),
-    );
-  }
-}
-
-// ============================================================
-// LOADING OVERLAY (blur + opacity)
-// ============================================================
-
-class LoadingOverlay extends StatelessWidget {
-  final bool isLoading;
-  final Widget child;
-  final String? message;
-
-  const LoadingOverlay({
-    super.key,
-    required this.isLoading,
-    required this.child,
-    this.message,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        child,
-        if (isLoading)
-          Container(
-            color: Colors.black.withValues(alpha: 0.5),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 4, sigmaY: 4),
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                  decoration: BoxDecoration(
-                    color: AppColors.card.withValues(alpha: 0.9),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        width: 28,
-                        height: 28,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: Colors.white,
-                        ),
-                      ),
-                      if (message != null) ...[
-                        const SizedBox(height: 14),
-                        Text(
-                          message!,
-                          style: const TextStyle(
-                            color: AppColors.label,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-      ],
     );
   }
 }
@@ -263,7 +203,7 @@ class WolowLiteApp extends StatelessWidget {
           backgroundColor: AppColors.bg,
           elevation: 0,
           scrolledUnderElevation: 0,
-          centerTitle: false,
+          centerTitle: true,
           titleTextStyle: TextStyle(
             color: AppColors.label,
             fontSize: 17,
@@ -319,11 +259,11 @@ class WolowLiteApp extends StatelessWidget {
           ),
         ),
         dialogTheme: DialogThemeData(
-          backgroundColor: AppColors.card,
+          backgroundColor: AppColors.elevatedBg,
           elevation: 24,
           shadowColor: Colors.black.withValues(alpha: 0.5),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(14),
           ),
           titleTextStyle: const TextStyle(
             color: AppColors.label,
@@ -332,8 +272,15 @@ class WolowLiteApp extends StatelessWidget {
           ),
           contentTextStyle: const TextStyle(
             color: AppColors.secondaryLabel,
-            fontSize: 14,
+            fontSize: 13,
+            height: 1.4,
           ),
+        ),
+        pageTransitionsTheme: const PageTransitionsTheme(
+          builders: {
+            TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          },
         ),
       ),
       home: const DeviceListScreen(),
@@ -514,8 +461,26 @@ class StorageService {
   }
 
   /// Returns a persistent unique ID for this app instance.
+  /// On Android, uses the hardware ANDROID_ID which survives app reinstalls.
+  /// Falls back to a random ID on other platforms.
   Future<String> getDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
+
+    // Try to get a hardware-based ID on Android
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        final deviceInfo = DeviceInfoPlugin();
+        final androidInfo = await deviceInfo.androidInfo;
+        final androidId = androidInfo.id; // ANDROID_ID - persists across installs
+        if (androidId.isNotEmpty) {
+          final hwId = 'android_$androidId';
+          await prefs.setString(_deviceIdKey, hwId);
+          return hwId;
+        }
+      } catch (_) {}
+    }
+
+    // Fallback: random ID (also used on iOS, web, desktop)
     var id = prefs.getString(_deviceIdKey);
     if (id == null) {
       final rng = Random.secure();
@@ -692,6 +657,390 @@ class AudioDevice {
 }
 
 // ============================================================
+// SYSTEM STATS SERVICE
+// ============================================================
+
+class SystemStats {
+  final double cpuPercent;
+  final double ramTotalGb;
+  final double ramUsedGb;
+  final double ramPercent;
+  final double diskTotalGb;
+  final double diskUsedGb;
+  final double diskPercent;
+
+  const SystemStats({
+    required this.cpuPercent,
+    required this.ramTotalGb,
+    required this.ramUsedGb,
+    required this.ramPercent,
+    required this.diskTotalGb,
+    required this.diskUsedGb,
+    required this.diskPercent,
+  });
+
+  factory SystemStats.fromJson(Map<String, dynamic> json) {
+    final ram = json['ram'] as Map<String, dynamic>? ?? {};
+    final disk = json['disk'] as Map<String, dynamic>? ?? {};
+    return SystemStats(
+      cpuPercent: (json['cpu_percent'] as num?)?.toDouble() ?? 0,
+      ramTotalGb: (ram['total_gb'] as num?)?.toDouble() ?? 0,
+      ramUsedGb: (ram['used_gb'] as num?)?.toDouble() ?? 0,
+      ramPercent: (ram['percent'] as num?)?.toDouble() ?? 0,
+      diskTotalGb: (disk['total_gb'] as num?)?.toDouble() ?? 0,
+      diskUsedGb: (disk['used_gb'] as num?)?.toDouble() ?? 0,
+      diskPercent: (disk['percent'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+class SystemStatsService {
+  final http.Client _client;
+  SystemStatsService({http.Client? client}) : _client = client ?? http.Client();
+
+  Future<SystemStats?> getStats(Device device) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/stats');
+    try {
+      final response = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) return SystemStats.fromJson(body);
+      }
+    } catch (_) {}
+    return null;
+  }
+}
+
+// ============================================================
+// PROCESS SERVICE
+// ============================================================
+
+class PcProcess {
+  final int pid;
+  final String name;
+  final double cpu;
+  final double mem;
+
+  const PcProcess({required this.pid, required this.name, required this.cpu, required this.mem});
+
+  factory PcProcess.fromJson(Map<String, dynamic> json) => PcProcess(
+        pid: json['pid'] as int? ?? 0,
+        name: json['name'] as String? ?? 'unknown',
+        cpu: (json['cpu'] as num?)?.toDouble() ?? 0,
+        mem: (json['mem'] as num?)?.toDouble() ?? 0,
+      );
+}
+
+class ProcessService {
+  final http.Client _client;
+  ProcessService({http.Client? client}) : _client = client ?? http.Client();
+
+  Future<List<PcProcess>> getProcesses(Device device, {int limit = 15}) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/processes?limit=$limit');
+    try {
+      final response = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) {
+          return (body['processes'] as List?)
+                  ?.map((e) => PcProcess.fromJson(e as Map<String, dynamic>))
+                  .toList() ??
+              [];
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+}
+
+// ============================================================
+// MEDIA SERVICE
+// ============================================================
+
+class MediaService {
+  final http.Client _client;
+  MediaService({http.Client? client}) : _client = client ?? http.Client();
+
+  Future<bool> sendKey(Device device, String key) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/media');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json', 'X-Token': device.agentToken},
+            body: jsonEncode({'key': key}),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return body['ok'] == true;
+      }
+    } catch (_) {}
+    return false;
+  }
+}
+
+// ============================================================
+// CUSTOM COMMAND SERVICE
+// ============================================================
+
+class CustomCommand {
+  final String id;
+  final String name;
+  final String command;
+
+  const CustomCommand({required this.id, required this.name, required this.command});
+
+  factory CustomCommand.fromJson(Map<String, dynamic> json) => CustomCommand(
+        id: json['id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        command: json['command'] as String? ?? '',
+      );
+}
+
+class CommandService {
+  final http.Client _client;
+  CommandService({http.Client? client}) : _client = client ?? http.Client();
+
+  Future<List<CustomCommand>> list(Device device) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/commands');
+    try {
+      final response = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) {
+          return (body['commands'] as List?)
+                  ?.map((e) => CustomCommand.fromJson(e as Map<String, dynamic>))
+                  .toList() ??
+              [];
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<(bool, String)> add(Device device, String name, String command) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/commands');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json', 'X-Token': device.agentToken},
+            body: jsonEncode({'name': name, 'command': command}),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) return (true, '');
+        return (false, body['error'] as String? ?? 'failed');
+      }
+    } catch (_) {}
+    return (false, 'cannot reach agent');
+  }
+
+  Future<(bool, String)> delete(Device device, String id) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/commands/$id');
+    try {
+      final response = await _client
+          .delete(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) return (true, '');
+        return (false, body['error'] as String? ?? 'failed');
+      }
+    } catch (_) {}
+    return (false, 'cannot reach agent');
+  }
+
+  Future<(bool, String)> run(Device device, String id) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/commands/run');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json', 'X-Token': device.agentToken},
+            body: jsonEncode({'id': id}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) return (true, body['name'] as String? ?? 'command');
+        return (false, body['error'] as String? ?? 'failed');
+      }
+    } catch (_) {}
+    return (false, 'cannot reach agent');
+  }
+}
+
+// ============================================================
+// APP SERVICE (installed apps)
+// ============================================================
+
+class AppEntry {
+  final String name;
+  final String path;
+  final String source;
+  final String? iconUrl;
+
+  const AppEntry({required this.name, required this.path, this.source = '', this.iconUrl});
+
+  factory AppEntry.fromJson(Map<String, dynamic> json) => AppEntry(
+        name: json['name'] as String? ?? '',
+        path: json['path'] as String? ?? '',
+        source: json['source'] as String? ?? '',
+        iconUrl: json['icon_url'] as String?,
+      );
+}
+
+class PinnedApp {
+  final String name;
+  final String path;
+
+  const PinnedApp({required this.name, required this.path});
+
+  factory PinnedApp.fromJson(Map<String, dynamic> json) => PinnedApp(
+        name: json['name'] as String? ?? '',
+        path: json['path'] as String? ?? '',
+      );
+
+  Map<String, dynamic> toJson() => {'name': name, 'path': path};
+}
+
+class AppService {
+  final http.Client _client;
+  AppService({http.Client? client}) : _client = client ?? http.Client();
+
+  Future<List<AppEntry>> getApps(Device device) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/apps');
+    try {
+      final response = await _client
+          .get(uri, headers: {'X-Token': device.agentToken})
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) {
+          return (body['apps'] as List?)
+                  ?.map((e) => AppEntry.fromJson(e as Map<String, dynamic>))
+                  .toList() ??
+              [];
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<(bool, String)> launch(Device device, String path) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/apps/launch');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json', 'X-Token': device.agentToken},
+            body: jsonEncode({'path': path}),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) return (true, '');
+        return (false, body['error'] as String? ?? 'failed');
+      }
+    } catch (_) {}
+    return (false, 'cannot reach agent');
+  }
+
+  Future<(bool, String)> openByName(Device device, String name) async {
+    final uri = Uri.parse('http://${device.ipAddress}:${device.agentPort}/apps/open');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json', 'X-Token': device.agentToken},
+            body: jsonEncode({'name': name}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['ok'] == true) {
+          return (true, body['app_name'] as String? ?? name);
+        }
+        return (false, body['error'] as String? ?? 'failed');
+      } else if (response.statusCode == 404) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return (false, body['error'] as String? ?? 'app not found');
+      }
+    } catch (_) {}
+    return (false, 'cannot reach agent');
+  }
+}
+
+// ============================================================
+// PINNED APPS SERVICE (persist user-selected apps for voice)
+// ============================================================
+
+class PinnedAppsService {
+  static const _key = 'pinned_apps';
+
+  /// Persisted as a List<String> where each item is a JSON string
+  /// { "name": "App Name", "path": "C:\\...\\app.exe" }
+  Future<List<PinnedApp>> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_key) ?? [];
+    return list
+        .map((s) {
+          try {
+            return PinnedApp.fromJson(jsonDecode(s) as Map<String, dynamic>);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<PinnedApp>()
+        .toList();
+  }
+
+  Future<void> save(List<PinnedApp> apps) async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = apps.map((a) => jsonEncode(a.toJson())).toList();
+    await prefs.setStringList(_key, list);
+  }
+
+  Future<void> update(PinnedApp entry) async {
+    final current = await load();
+    final idx = current.indexWhere((p) => p.name.toLowerCase() == entry.name.toLowerCase());
+    if (idx >= 0) {
+      current[idx] = entry;
+    } else {
+      current.add(entry);
+    }
+    await save(current);
+  }
+
+  /// Toggle a pinned app: if a pinned entry with the same name exists,
+  /// remove it; otherwise add the provided entry (which includes the path).
+  Future<void> toggle(AppEntry entry) async {
+    final current = await load();
+    final existingIndex = current.indexWhere((p) => p.name.toLowerCase() == entry.name.toLowerCase());
+    if (existingIndex >= 0) {
+      current.removeAt(existingIndex);
+    } else {
+      current.add(PinnedApp(name: entry.name, path: entry.path));
+    }
+    await save(current);
+  }
+
+  Future<bool> isPinned(String appName) async {
+    final current = await load();
+    return current.any((p) => p.name.toLowerCase() == appName.toLowerCase());
+  }
+}
+
+// ============================================================
 // WAKE-ON-LAN SERVICE
 // ============================================================
 
@@ -830,9 +1179,9 @@ class AgentService {
         try {
           final body = jsonDecode(response.body) as Map<String, dynamic>;
           final ownerName = body['owner_device_name'] as String? ?? 'another device';
-          return (false, 'This PC is already registered to $ownerName');
+          return (false, 'Already registered to $ownerName — ask them to delete it first, or re-run setup.bat on the PC');
         } catch (_) {
-          return (false, 'This PC is already registered to another device');
+          return (false, 'Already registered to another device — ask them to delete it first, or re-run setup.bat on the PC');
         }
       }
       // 404/405 = old agent without /register endpoint
@@ -875,6 +1224,18 @@ class AgentService {
             }),
           )
           .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 403) {
+        try {
+          final body = jsonDecode(response.body) as Map<String, dynamic>;
+          final ownerName = body['owner_device_name'] as String? ?? 'another device';
+          return (false, 'This PC is registered to $ownerName — re-run setup.bat on your PC to reset');
+        } catch (_) {
+          return (false, 'This PC is registered to another device — re-run setup.bat on your PC to reset');
+        }
+      }
+      if (response.statusCode == 404 || response.statusCode == 405) {
+        return (false, 'Agent outdated — rerun setup.bat on your PC to update');
+      }
       if (response.statusCode != 200) {
         return (false, 'Agent returned ${response.statusCode}');
       }
@@ -1191,7 +1552,7 @@ class DiscoveryService {
     for (final iface in interfaces) {
       for (final addr in iface.addresses) {
         final ip = addr.address;
-        if (!_isPrivateIp(ip)) continue;
+        if (!NetworkHelper._isPrivateIp(ip)) continue;
 
         final parts = ip.split('.');
         if (parts.length != 4) continue;
@@ -1216,19 +1577,6 @@ class DiscoveryService {
 
     return agents;
   }
-
-  static bool _isPrivateIp(String ip) {
-    if (ip.startsWith('10.')) return true;
-    if (ip.startsWith('192.168.')) return true;
-    if (ip.startsWith('172.')) {
-      final parts = ip.split('.');
-      if (parts.length == 4) {
-        final second = int.tryParse(parts[1]) ?? 0;
-        if (second >= 16 && second <= 31) return true;
-      }
-    }
-    return false;
-  }
 }
 
 // ============================================================
@@ -1250,14 +1598,14 @@ class IOSSection extends StatelessWidget {
         children: [
           if (header != null)
             Padding(
-              padding: const EdgeInsets.only(left: 16, bottom: 8),
+              padding: const EdgeInsets.only(left: 16, bottom: 6),
               child: Text(
-                header!,
+                header!.toUpperCase(),
                 style: const TextStyle(
                   color: AppColors.secondaryLabel,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w400,
-                  letterSpacing: -0.1,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.5,
                 ),
               ),
             ),
@@ -1305,13 +1653,15 @@ class IOSListTile extends StatelessWidget {
         InkWell(
           onTap: onTap,
           onLongPress: onLongPress,
+          splashColor: Colors.transparent,
+          highlightColor: AppColors.cardLight.withValues(alpha: 0.4),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
             child: Row(
               children: [
                 if (leading != null) ...[
                   leading!,
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 12),
                 ],
                 Expanded(
                   child: Column(
@@ -1321,8 +1671,9 @@ class IOSListTile extends StatelessWidget {
                         title,
                         style: const TextStyle(
                           color: AppColors.label,
-                          fontSize: 16,
+                          fontSize: 15,
                           fontWeight: FontWeight.w400,
+                          letterSpacing: -0.2,
                         ),
                       ),
                       if (subtitle != null)
@@ -1332,7 +1683,7 @@ class IOSListTile extends StatelessWidget {
                             subtitle!,
                             style: const TextStyle(
                               color: AppColors.secondaryLabel,
-                              fontSize: 13,
+                              fontSize: 12,
                             ),
                           ),
                         ),
@@ -1345,9 +1696,9 @@ class IOSListTile extends StatelessWidget {
           ),
         ),
         if (showSeparator)
-          const Padding(
-            padding: EdgeInsets.only(left: 56),
-            child: Divider(color: AppColors.separator, height: 0.5),
+          Padding(
+            padding: EdgeInsets.only(left: leading != null ? 62 : 16),
+            child: const Divider(color: AppColors.separator, height: 0.5),
           ),
       ],
     );
@@ -1380,33 +1731,34 @@ class IOSActionButton extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
           child: Row(
             children: [
               Container(
-                width: 30,
-                height: 30,
+                width: 28,
+                height: 28,
                 decoration: BoxDecoration(
-                  color: iconColor.withValues(alpha: 0.15),
+                  color: iconColor.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(7),
                 ),
-                child: Icon(icon, color: iconColor, size: 17),
+                child: Icon(icon, color: iconColor, size: 16),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 12),
               Expanded(
                 child: Text(
                   label,
                   style: TextStyle(
                     color: onTap != null ? AppColors.label : AppColors.tertiaryLabel,
-                    fontSize: 16,
+                    fontSize: 15,
+                    letterSpacing: -0.2,
                   ),
                 ),
               ),
               if (onTap != null)
                 Icon(
                   Icons.chevron_right,
-                  color: AppColors.tertiaryLabel,
-                  size: 18,
+                  color: AppColors.quaternaryLabel,
+                  size: 16,
                 ),
             ],
           ),
@@ -1432,14 +1784,20 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   final _wol = WolService();
   final _ping = PingService();
   final _agent = AgentService();
+  final _statsService = SystemStatsService();
+  final _pinnedAppsService = PinnedAppsService();
+  final _appService = AppService();
   List<Device> _devices = [];
   final Map<String, bool> _online = {};
   final Map<String, AgentStatus?> _agentStatus = {};
+  final Map<String, SystemStats?> _deviceStats = {};
   final Set<String> _checking = {};
   bool _loading = true;
   String? _wakeTarget;
   Timer? _refreshTimer;
   String _deviceId = '';
+  List<PinnedApp> _pinnedApps = [];
+  List<AppEntry> _availableApps = [];
 
   /// Devices that are booting up after WoL was sent (60 second window)
   final Map<String, DateTime> _starting = {};
@@ -1448,10 +1806,43 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   void initState() {
     super.initState();
     _load();
+    _loadPinnedApps();
     _refreshTimer = Timer.periodic(
-      const Duration(seconds: 5),
+      const Duration(seconds: 3),
       (_) => _checkAll(),
     );
+  }
+
+  Future<void> _loadPinnedApps() async {
+    final pinned = await _pinnedAppsService.load();
+    if (mounted) setState(() => _pinnedApps = pinned);
+  }
+
+  bool _loadingApps = false;
+
+  Future<void> _loadAvailableApps() async {
+    if (_loadingApps) return;
+    _loadingApps = true;
+    try {
+      Device? target;
+      for (final d in _devices) {
+        if (_online[d.id] == true && d.hasAgent) {
+          target = d;
+          break;
+        }
+      }
+      if (target == null) return;
+      final apps = await _appService.getApps(target);
+      if (mounted) setState(() => _availableApps = apps);
+    } finally {
+      _loadingApps = false;
+    }
+  }
+
+  Future<void> _togglePinnedApp(AppEntry entry) async {
+    await _pinnedAppsService.toggle(entry);
+    final pinned = await _pinnedAppsService.load();
+    if (mounted) setState(() => _pinnedApps = pinned);
   }
 
   @override
@@ -1469,6 +1860,8 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       _loading = false;
     });
     _checkAll();
+    // Load apps after a short delay to let device status resolve
+    Future.delayed(const Duration(seconds: 2), _loadAvailableApps);
   }
 
   Future<void> _checkAll() async {
@@ -1476,6 +1869,11 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       _checkDevice(d);
     }
   }
+
+  /// Number of consecutive agent connection failures before clearing stats.
+  /// Prevents stats from flickering on brief network hiccups.
+  final Map<String, int> _consecutiveFailures = {};
+  static const int _maxFailuresBeforeClear = 3;
 
   Future<void> _checkDevice(Device d) async {
     if (_checking.contains(d.id)) return;
@@ -1491,14 +1889,11 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       if (mounted) {
         setState(() {
           if (reachable) {
-            // Device is reachable — clear starting state
             _starting.remove(d.id);
             _online[d.id] = true;
           } else if (isStarting) {
-            // Still in starting window — keep as "starting" (not offline)
             _online[d.id] = false;
           } else {
-            // Not reachable and not starting — truly offline
             _starting.remove(d.id);
             _online[d.id] = false;
           }
@@ -1508,6 +1903,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       if (d.hasAgent) {
         final (ok, msg) = await _agent.testConnection(d);
         if (mounted && ok) {
+          _consecutiveFailures[d.id] = 0;
           final match = RegExp(r'Connected to (.+?) \((.+?)\)').firstMatch(msg);
           if (match != null) {
             setState(() {
@@ -1517,13 +1913,22 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                 pythonVersion: '',
                 fetchedAt: DateTime.now(),
               );
-              // Agent is online — clear starting state
               _starting.remove(d.id);
               _online[d.id] = true;
             });
+            final stats = await _statsService.getStats(d);
+            if (mounted) setState(() => _deviceStats[d.id] = stats);
           }
         } else if (mounted) {
-          setState(() => _agentStatus[d.id] = null);
+          // Only clear stats after multiple consecutive failures
+          final failures = (_consecutiveFailures[d.id] ?? 0) + 1;
+          _consecutiveFailures[d.id] = failures;
+          if (failures >= _maxFailuresBeforeClear) {
+            setState(() {
+              _agentStatus[d.id] = null;
+              _deviceStats[d.id] = null;
+            });
+          }
         }
       }
     } finally {
@@ -1561,11 +1966,12 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             iconColor: AppColors.blue,
           );
         }
-        final (ok, msg) = await _agent.registerDevice(
+        var (ok, msg) = await _agent.registerDevice(
           newDevice,
           deviceId: _deviceId,
           deviceName: newDevice.name,
         );
+
         if (!ok) {
           if (mounted) {
             showTopNotification(
@@ -1586,6 +1992,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   }
 
   Future<void> _wakeDevice(Device d) async {
+    HapticFeedback.lightImpact();
     setState(() => _wakeTarget = d.id);
     try {
       await _wol.wake(d);
@@ -1616,6 +2023,302 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     }
   }
 
+  Color _getAppColor(String name) {
+    final lower = name.toLowerCase();
+    // Real brand colors
+    if (lower.contains('chrome')) return const Color(0xFF4285F4);     // Google blue
+    if (lower.contains('firefox')) return const Color(0xFFFF7139);    // Firefox orange
+    if (lower.contains('edge')) return const Color(0xFF0078D4);       // Edge blue
+    if (lower.contains('spotify')) return const Color(0xFF1DB954);    // Spotify green
+    if (lower.contains('discord')) return const Color(0xFF5865F2);    // Discord blurple
+    if (lower.contains('slack')) return const Color(0xFF4A154B);      // Slack purple
+    if (lower.contains('code') || lower.contains('vscode')) return const Color(0xFF007ACC); // VS Code blue
+    if (lower.contains('notepad')) return const Color(0xFF0078D4);    // Windows blue
+    if (lower.contains('terminal') || lower.contains('cmd')) return const Color(0xFF0C0C0C); // Terminal black
+    if (lower.contains('powershell')) return const Color(0xFF012456); // PowerShell blue
+    if (lower.contains('steam')) return const Color(0xFF1B2838);      // Steam dark
+    if (lower.contains('obs')) return const Color(0xFF302B2B);        // OBS dark
+    if (lower.contains('vlc')) return const Color(0xFFFF8800);        // VLC orange
+    if (lower.contains('word')) return const Color(0xFF2B579A);       // Word blue
+    if (lower.contains('excel')) return const Color(0xFF217346);      // Excel green
+    if (lower.contains('powerpoint')) return const Color(0xFFD24726); // PowerPoint red
+    if (lower.contains('outlook')) return const Color(0xFF0078D4);    // Outlook blue
+    if (lower.contains('teams')) return const Color(0xFF6264A7);      // Teams purple
+    if (lower.contains('git')) return const Color(0xFFF05032);        // Git red
+    if (lower.contains('node')) return const Color(0xFF339933);       // Node green
+    if (lower.contains('python')) return const Color(0xFF3776AB);     // Python blue
+    if (lower.contains('java')) return const Color(0xFFED8B00);       // Java orange
+    if (lower.contains('brave')) return const Color(0xFFFB542B);      // Brave orange
+    if (lower.contains('cursor')) return const Color(0xFF000000);     // Cursor black
+    if (lower.contains('postgre') || lower.contains('pgadmin')) return const Color(0xFF336791); // PostgreSQL blue
+    if (lower.contains('valorant')) return const Color(0xFFFF4655);   // Valorant red
+    if (lower.contains('dota')) return const Color(0xFF111111);       // Dota dark
+    if (lower.contains('photoshop')) return const Color(0xFF31A8FF);  // PS blue
+    if (lower.contains('illustrator')) return const Color(0xFFFF9A00); // AI orange
+    if (lower.contains('store')) return const Color(0xFF0078D4);      // MS Store blue
+    if (lower.contains('explorer') || lower.contains('file')) return const Color(0xFFDCC72E); // Explorer yellow
+    if (lower.contains('settings')) return const Color(0xFF767676);   // Settings gray
+    if (lower.contains('calculator')) return const Color(0xFF0078D4);
+    if (lower.contains('paint')) return const Color(0xFF0097A7);
+    if (lower.contains('winrar') || lower.contains('7-zip')) return const Color(0xFF2D5DA1);
+    if (lower.contains('zoom')) return const Color(0xFF2D8CFF);
+    if (lower.contains('capcut')) return const Color(0xFF000000);
+    if (lower.contains('medal')) return const Color(0xFF6C5CE7);
+    if (lower.contains('viber')) return const Color(0xFF7360F2);
+    if (lower.contains('xampp')) return const Color(0xFFFB7A24);
+    // Fallback: generate a deterministic color from the name
+    final hash = name.hashCode;
+    final hue = (hash % 360).toDouble();
+    return HSLColor.fromAHSL(1.0, hue, 0.6, 0.45).toColor();
+  }
+
+  Future<void> _showAppPicker() async {
+    // Load apps if not already loaded — await so the modal has data
+    if (_availableApps.isEmpty) await _loadAvailableApps();
+
+    if (!mounted) return;
+    String searchQuery = '';
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          final filtered = searchQuery.isEmpty
+              ? _availableApps
+              : _availableApps.where((a) => a.name.toLowerCase().contains(searchQuery)).toList();
+          return Container(
+            height: MediaQuery.of(ctx).size.height * 0.7,
+            decoration: const BoxDecoration(
+              color: AppColors.elevatedBg,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+            ),
+            child: Column(
+              children: [
+                // Handle bar
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.separator,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                // Header
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 16, 20, 12),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Add to Quick Launch',
+                        style: TextStyle(
+                          color: AppColors.label,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Search
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.card,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: TextField(
+                      autofocus: true,
+                      style: const TextStyle(color: AppColors.label, fontSize: 15),
+                      decoration: InputDecoration(
+                        hintText: 'Search apps...',
+                        hintStyle: TextStyle(color: AppColors.tertiaryLabel),
+                        prefixIcon: Icon(Icons.search_rounded, color: AppColors.tertiaryLabel, size: 20),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      onChanged: (v) => setModalState(() => searchQuery = v.toLowerCase()),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // App list
+                Expanded(
+                  child: filtered.isEmpty
+                      ? Center(
+                          child: Text(
+                            'No apps found',
+                            style: TextStyle(color: AppColors.tertiaryLabel, fontSize: 14),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: filtered.length,
+                          itemBuilder: (_, i) {
+                            final app = filtered[i];
+                            final pinned = _pinnedApps.any((p) => p.name.toLowerCase() == app.name.toLowerCase());
+                            final color = _getAppColor(app.name);
+                            final initial = app.name.isNotEmpty ? app.name[0].toUpperCase() : '?';
+                            return GestureDetector(
+                              onTap: () async {
+                                await _togglePinnedApp(app);
+                                setModalState(() {}); // refresh modal
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                child: Row(
+                                  children: [
+                                    // App icon
+                                    _AppIcon(
+                                      initial: initial,
+                                      color: color,
+                                      size: 28,
+                                      radius: 7,
+                                      iconUrl: app.iconUrl,
+                                      appName: app.name,
+                                    ),
+                                    const SizedBox(width: 12),
+                                    // App name
+                                    Expanded(
+                                      child: Text(
+                                        app.name,
+                                        style: TextStyle(
+                                          color: pinned ? AppColors.blue : AppColors.label,
+                                          fontSize: 15,
+                                          fontWeight: pinned ? FontWeight.w500 : FontWeight.w400,
+                                        ),
+                                      ),
+                                    ),
+                                    // Check or add
+                                    Icon(
+                                      pinned ? Icons.check_circle_rounded : Icons.add_circle_outline_rounded,
+                                      color: pinned ? AppColors.blue : AppColors.tertiaryLabel,
+                                      size: 22,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _launchApp(AppEntry app) async {
+    HapticFeedback.lightImpact();
+    Device? target;
+    for (final d in _devices) {
+      if (_online[d.id] == true && d.hasAgent) {
+        target = d;
+        break;
+      }
+    }
+    if (target == null) {
+      if (mounted) showTopNotification(context, message: 'No online device', icon: Icons.error_outline_rounded, iconColor: AppColors.red);
+      return;
+    }
+    // Prefer direct path-based launch when we have a concrete path (more reliable)
+    if (app.path.isNotEmpty) {
+      final (ok, msg) = await _appService.launch(target, app.path);
+      if (mounted) {
+        showTopNotification(
+          context,
+          message: ok ? 'Opening ${app.name}...' : 'Failed: $msg',
+          icon: ok ? Icons.check_circle_outline_rounded : Icons.error_outline_rounded,
+          iconColor: ok ? AppColors.green : AppColors.red,
+        );
+      }
+      if (ok) return;
+      // If path-based launch failed, fall through to name-based fuzzy match
+    }
+
+    // If we don't have a concrete path, attempt to resolve candidates locally
+    if (app.path.isEmpty) {
+      final lc = app.name.toLowerCase();
+      final candidates = _availableApps.where((a) {
+        final an = a.name.toLowerCase();
+        return an == lc || an.contains(lc) || lc.contains(an);
+      }).toList();
+
+      if (candidates.length > 1) {
+        // Ask the user to pick which exact app they mean
+        final selected = await showModalBottomSheet<AppEntry?>(
+          context: context,
+          builder: (_) => Container(
+            color: AppColors.card,
+            child: ListView.separated(
+              itemCount: candidates.length,
+              separatorBuilder: (_, __) => Divider(color: AppColors.separator, height: 0.5),
+              itemBuilder: (_, i) {
+                final c = candidates[i];
+                return ListTile(
+                  leading: _AppIcon(initial: c.name.isNotEmpty ? c.name[0].toUpperCase() : '?', color: _getAppColor(c.name), size: 36, radius: 8, iconUrl: c.iconUrl, appName: c.name),
+                  title: Text(c.name, style: const TextStyle(color: AppColors.label)),
+                  subtitle: Text(c.path.isNotEmpty ? c.path : c.source, style: const TextStyle(color: AppColors.secondaryLabel, fontSize: 12)),
+                  onTap: () => Navigator.pop(context, c),
+                );
+              },
+            ),
+          ),
+        );
+
+        if (selected != null) {
+          // Persist the selected concrete path for this pinned app (if it exists)
+          await _pinnedAppsService.update(PinnedApp(name: selected.name, path: selected.path));
+          final pinned = await _pinnedAppsService.load();
+          if (mounted) setState(() => _pinnedApps = pinned);
+          // Launch the selected path if available
+          if (selected.path.isNotEmpty) {
+            final (ok, msg) = await _appService.launch(target, selected.path);
+            if (mounted) showTopNotification(context, message: ok ? 'Opening ${selected.name}...' : 'Failed: $msg', icon: ok ? Icons.check_circle_outline_rounded : Icons.error_outline_rounded, iconColor: ok ? AppColors.green : AppColors.red);
+            return;
+          }
+        }
+      }
+
+      // If we have a single candidate, prefer it
+      if (candidates.length == 1) {
+        final c = candidates.first;
+        if (c.path.isNotEmpty) {
+          await _pinnedAppsService.update(PinnedApp(name: c.name, path: c.path));
+          final pinned = await _pinnedAppsService.load();
+          if (mounted) setState(() => _pinnedApps = pinned);
+          final (ok, msg) = await _appService.launch(target, c.path);
+          if (mounted) showTopNotification(context, message: ok ? 'Opening ${c.name}...' : 'Failed: $msg', icon: ok ? Icons.check_circle_outline_rounded : Icons.error_outline_rounded, iconColor: ok ? AppColors.green : AppColors.red);
+          return;
+        }
+      }
+
+      // No concrete candidates found — fall back to name-based fuzzy match
+    }
+
+    // Try name-based fuzzy match (handles UWP, empty paths, shell: apps)
+    final (nameOk, nameMsg) = await _appService.openByName(target, app.name);
+    if (nameOk) {
+      if (mounted) showTopNotification(context, message: 'Opening $nameMsg...', icon: Icons.check_circle_outline_rounded, iconColor: AppColors.green);
+      return;
+    }
+    // If name-based failed and we previously attempted path it already produced a failure notification above
+    // Both failed
+    if (mounted) {
+      showTopNotification(
+        context,
+        message: 'Failed: $nameMsg',
+        icon: Icons.error_outline_rounded,
+        iconColor: AppColors.red,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1626,7 +2329,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
           ),
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -1634,16 +2337,16 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                     'Devices',
                     style: TextStyle(
                       color: AppColors.label,
-                      fontSize: 34,
+                      fontSize: 28,
                       fontWeight: FontWeight.w700,
-                      letterSpacing: -0.7,
+                      letterSpacing: -0.6,
                     ),
                   ),
                   IconButton(
                     icon: const Icon(
                       Icons.help_outline_rounded,
                       color: AppColors.secondaryLabel,
-                      size: 24,
+                      size: 22,
                     ),
                     onPressed: () => Navigator.push(
                       context,
@@ -1669,26 +2372,35 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      Icons.desktop_mac_rounded,
-                      size: 48,
-                      color: AppColors.tertiaryLabel,
+                    Container(
+                      width: 64,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        color: AppColors.card,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Icon(
+                        Icons.desktop_mac_rounded,
+                        size: 32,
+                        color: AppColors.tertiaryLabel,
+                      ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 16),
                     const Text(
                       'No Devices',
                       style: TextStyle(
-                        color: AppColors.secondaryLabel,
+                        color: AppColors.label,
                         fontSize: 17,
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.3,
                       ),
                     ),
                     const SizedBox(height: 6),
                     const Text(
-                      'Tap + to add a device',
+                      'Tap + to add your first device',
                       style: TextStyle(
                         color: AppColors.tertiaryLabel,
-                        fontSize: 14,
+                        fontSize: 13,
                       ),
                     ),
                   ],
@@ -1698,62 +2410,21 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
           else
             SliverToBoxAdapter(
               child: IOSSection(
-                header: 'YOUR DEVICES',
+                header: 'Your Devices',
                 children: _devices.asMap().entries.map((entry) {
                   final d = entry.value;
                   final isWaking = _wakeTarget == d.id;
                   final isOnline = _online[d.id];
                   final isStarting = _starting.containsKey(d.id);
-                  final isLast = entry.key == _devices.length - 1;
-
-                  return IOSListTile(
-                    leading: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: isOnline == true
-                            ? AppColors.green.withValues(alpha: 0.15)
-                            : isStarting
-                                ? AppColors.orange.withValues(alpha: 0.15)
-                                : AppColors.cardLight,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(
-                        Icons.desktop_mac_rounded,
-                        color: isOnline == true
-                            ? AppColors.green
-                            : isStarting
-                                ? AppColors.orange
-                                : AppColors.secondaryLabel,
-                        size: 20,
-                      ),
-                    ),
-                    title: _agentStatus[d.id] != null
-                        ? _agentStatus[d.id]!.hostname
-                        : d.name,
-                    subtitle: _agentStatus[d.id] != null
-                        ? '(${_agentStatus[d.id]!.platform})'
-                        : isStarting
-                            ? 'Starting...'
-                            : d.mac,
-                    trailing: isWaking
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: AppColors.blue,
-                            ),
-                          )
-                        : IconButton(
-                            icon: Icon(
-                              Icons.power_settings_new_rounded,
-                              color: isOnline == true ? AppColors.blue : AppColors.tertiaryLabel,
-                              size: 22,
-                            ),
-                            onPressed: () => _wakeDevice(d),
-                            splashRadius: 22,
-                          ),
+                  final stats = _deviceStats[d.id];
+                  return _DashboardDeviceCard(
+                    device: d,
+                    isOnline: isOnline,
+                    isStarting: isStarting,
+                    isWaking: isWaking,
+                    agentStatus: _agentStatus[d.id],
+                    stats: stats,
+                    onWake: () => _wakeDevice(d),
                     onLongPress: () async {
                       final confirm = await showModalBottomSheet<bool>(
                         context: context,
@@ -1774,18 +2445,19 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                         ),
                       );
                       if (confirm == true) {
-                        // Unregister from the agent before removing
-                        String? unregisterError;
+                        // Best-effort unregister — device is removed locally regardless
+                        String? unregisterMsg;
                         if (d.hasAgent) {
-                          final (ok, msg) = await _agent.unregisterDevice(d, deviceId: _deviceId);
-                          if (!ok) unregisterError = msg;
+                          final deviceId = _deviceId.isNotEmpty ? _deviceId : await _storage.getDeviceId();
+                          final (ok, msg) = await _agent.unregisterDevice(d, deviceId: deviceId);
+                          if (!ok) unregisterMsg = msg;
                         }
                         if (!mounted) return;
-                        if (unregisterError != null) {
+                        if (unregisterMsg != null && context.mounted) {
                           showTopNotification(
-                            context, // ignore: use_build_context_synchronously
-                            message: 'Could not unregister from PC: $unregisterError. The device may remain occupied.',
-                            icon: Icons.warning_amber_rounded,
+                            context,
+                            message: unregisterMsg,
+                            icon: Icons.info_outline_rounded,
                             iconColor: AppColors.orange,
                           );
                         }
@@ -1806,16 +2478,121 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                         _checkAll();
                       }
                     },
-                    showSeparator: !isLast,
                   );
                 }).toList(),
               ),
             ),
+          // Quick Launch app strip — only show when devices exist
+          if (_devices.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.card,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  children: [
+                    // Section header with add button
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Quick Launch',
+                            style: TextStyle(
+                              color: AppColors.secondaryLabel,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: -0.2,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: _showAppPicker,
+                            child: Container(
+                              padding: const EdgeInsets.all(2),
+                              decoration: BoxDecoration(
+                                color: AppColors.blue.withValues(alpha: 0.12),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.add_rounded, color: AppColors.blue, size: 16),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Centered app icons (or empty state)
+                    if (_pinnedApps.isNotEmpty)
+                      Center(
+                        child: Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 12,
+                          runSpacing: 8,
+                          children: _pinnedApps.map((pinned) {
+                            // Find app by exact name first, then case-insensitive match
+                            var app = _availableApps.where((a) => a.name == pinned.name).firstOrNull;
+                            app ??= _availableApps.where((a) => a.name.toLowerCase() == pinned.name.toLowerCase()).firstOrNull;
+                            final color = _getAppColor(pinned.name);
+                            final initial = pinned.name.isNotEmpty ? pinned.name[0].toUpperCase() : '?';
+                            return GestureDetector(
+                              onTap: () => _launchApp(app ?? AppEntry(name: pinned.name, path: pinned.path)),
+                              child: SizedBox(
+                                width: 48,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    _AppIcon(
+                                      initial: initial,
+                                      color: color,
+                                      size: 38,
+                                      radius: 10,
+                                      iconUrl: app?.iconUrl,
+                                      appName: pinned.name,
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      pinned.name.length > 7 ? '${pinned.name.substring(0, 6)}…' : pinned.name,
+                                      style: const TextStyle(
+                                        color: AppColors.secondaryLabel,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text(
+                          'Tap + to add quick launch apps',
+                          style: TextStyle(
+                            color: AppColors.tertiaryLabel,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _addDevice,
-        child: const Icon(Icons.add_rounded, size: 28),
+        child: const Icon(Icons.add_rounded, size: 26),
       ),
     );
   }
@@ -1904,6 +2681,516 @@ class _IOSAction {
   final VoidCallback? onTap;
 
   const _IOSAction({required this.label, this.color, this.onTap});
+}
+
+// ============================================================
+// DASHBOARD DEVICE CARD (with inline stats)
+// ============================================================
+
+class _AppIcon extends StatefulWidget {
+  final String initial;
+  final Color color;
+  final double size;
+  final double radius;
+  final String? iconUrl;
+  final String? appName;
+
+  const _AppIcon({
+    required this.initial,
+    required this.color,
+    this.size = 38,
+    this.radius = 10,
+    this.iconUrl,
+    this.appName,
+  });
+
+  @override
+  State<_AppIcon> createState() => _AppIconState();
+}
+
+class _AppIconState extends State<_AppIcon> {
+  Uint8List? _imageBytes;
+  bool _loading = false;
+  String? _loadedUrl;
+
+  // Map app names to their domains for favicon lookup
+  static const _domainMap = {
+    'chrome': 'google.com',
+    'google chrome': 'google.com',
+    'firefox': 'mozilla.org',
+    'mozilla firefox': 'mozilla.org',
+    'edge': 'microsoft.com',
+    'microsoft edge': 'microsoft.com',
+    'discord': 'discord.com',
+    'spotify': 'spotify.com',
+    'steam': 'steampowered.com',
+    'epic games': 'epicgames.com',
+    'epic games launcher': 'epicgames.com',
+    'vscode': 'code.visualstudio.com',
+    'visual studio code': 'code.visualstudio.com',
+    'vs code': 'code.visualstudio.com',
+    'obs': 'obsproject.com',
+    'obs studio': 'obsproject.com',
+    'vlc': 'videolan.org',
+    'vlc media player': 'videolan.org',
+    'telegram': 'telegram.org',
+    'whatsapp': 'whatsapp.com',
+    'slack': 'slack.com',
+    'teams': 'microsoft.com',
+    'microsoft teams': 'microsoft.com',
+    'zoom': 'zoom.us',
+    'notepad++': 'notepad-plus-plus.org',
+    'photoshop': 'adobe.com',
+    'illustrator': 'adobe.com',
+    'premiere': 'adobe.com',
+    '7-zip': '7-zip.org',
+    'winrar': 'win-rar.com',
+    'git': 'git-scm.com',
+    'github': 'github.com',
+    'android studio': 'developer.android.com',
+    'intellij': 'jetbrains.com',
+    'pycharm': 'jetbrains.com',
+    'webstorm': 'jetbrains.com',
+    'brave': 'brave.com',
+    'brave browser': 'brave.com',
+    'opera': 'opera.com',
+    'vivaldi': 'vivaldi.com',
+    'outlook': 'outlook.com',
+    'microsoft outlook': 'outlook.com',
+    'word': 'microsoft.com',
+    'excel': 'microsoft.com',
+    'powerpoint': 'microsoft.com',
+    'onenote': 'microsoft.com',
+    'onenote for windows': 'microsoft.com',
+    'paint': 'microsoft.com',
+    'calculator': 'microsoft.com',
+    'terminal': 'microsoft.com',
+    'windows terminal': 'microsoft.com',
+    'powershell': 'microsoft.com',
+    'cmd': 'microsoft.com',
+    'command prompt': 'microsoft.com',
+    'file explorer': 'microsoft.com',
+    'explorer': 'microsoft.com',
+    'settings': 'microsoft.com',
+    'microsoft store': 'microsoft.com',
+    'store': 'microsoft.com',
+    'xbox': 'xbox.com',
+    'nvidia': 'nvidia.com',
+    'nvidia control panel': 'nvidia.com',
+    'amd': 'amd.com',
+    'intel': 'intel.com',
+    'docker': 'docker.com',
+    'postman': 'postman.com',
+    'figma': 'figma.com',
+    'notion': 'notion.so',
+    'obsidian': 'obsidian.md',
+    '1password': '1password.com',
+    'bitwarden': 'bitwarden.com',
+    'malwarebytes': 'malwarebytes.com',
+    'ccleaner': 'ccleaner.com',
+    'ticktick': 'ticktick.com',
+    'todoist': 'todoist.com',
+    'trello': 'trello.com',
+    'jira': 'atlassian.com',
+    'confluence': 'atlassian.com',
+    'youtube': 'youtube.com',
+    'netflix': 'netflix.com',
+    'twitch': 'twitch.tv',
+    'reddit': 'reddit.com',
+    'twitter': 'x.com',
+    'x': 'x.com',
+    'facebook': 'facebook.com',
+    'instagram': 'instagram.com',
+    'linkedin': 'linkedin.com',
+    'pinterest': 'pinterest.com',
+    'tiktok': 'tiktok.com',
+    'snapchat': 'snapchat.com',
+    'medium': 'medium.com',
+    'substack': 'substack.com',
+    'dropbox': 'dropbox.com',
+    'google drive': 'drive.google.com',
+    'onedrive': 'onedrive.com',
+    'microsoft onedrive': 'onedrive.com',
+    'google': 'google.com',
+    'bing': 'bing.com',
+    'duckduckgo': 'duckduckgo.com',
+    'brave search': 'search.brave.com',
+    'copilot': 'copilot.microsoft.com',
+    'chatgpt': 'chat.openai.com',
+    'openai': 'openai.com',
+    'claude': 'claude.ai',
+    'anthropic': 'anthropic.com',
+    'midjourney': 'midjourney.com',
+    'stable diffusion': 'stability.ai',
+    'audacity': 'audacityteam.org',
+    'fl studio': 'image-line.com',
+    'ableton': 'ableton.com',
+    'logic pro': 'apple.com',
+    'garageband': 'apple.com',
+    'da vinci resolve': 'blackmagicdesign.com',
+    'premiere pro': 'adobe.com',
+    'after effects': 'adobe.com',
+    'lightroom': 'adobe.com',
+    'xd': 'adobe.com',
+    'indesign': 'adobe.com',
+    'blender': 'blender.org',
+    'unity': 'unity.com',
+    'unreal engine': 'unrealengine.com',
+    'godot': 'godotengine.org',
+    'minecraft': 'minecraft.net',
+    'roblox': 'roblox.com',
+    'fortnite': 'fortnite.com',
+    'valorant': 'playvalorant.com',
+    'league of legends': 'leagueoflegends.com',
+    'dota': 'dota2.com',
+    'dota 2': 'dota2.com',
+    'counter-strike': 'counter-strike.net',
+    'cs2': 'counter-strike.net',
+    'overwatch': 'overwatch.com',
+    'apex legends': 'ea.com',
+    'pubg': 'pubg.com',
+    'genshin impact': 'hoyoverse.com',
+    'world of warcraft': 'worldofwarcraft.blizzard.com',
+    'diablo': 'diablo.com',
+    'hearthstone': 'hearthstone.blizzard.com',
+    'starcraft': 'starcraft2.blizzard.com',
+  };
+
+  String? _getOnlineIconUrl() {
+    final name = widget.appName?.toLowerCase().trim();
+    if (name == null || name.isEmpty) return null;
+
+    // Look up domain from map
+    String? domain = _domainMap[name];
+
+    // If not in map, try to construct a domain from the app name
+    if (domain == null) {
+      // Clean the name: remove version numbers, architecture, etc.
+      final cleanName = name
+          .replaceAll(RegExp(r'\s*\d+[\.\d]*\s*'), ' ')
+          .replaceAll(RegExp(r'\s*\(.*?\)\s*'), ' ')
+          .replaceAll(RegExp(r'\s*x(64|86)\s*'), ' ')
+          .replaceAll(RegExp(r'\s*(64-bit|32-bit)\s*'), ' ')
+          .trim();
+
+      // Try common domain patterns
+      final candidates = [
+        '${cleanName.replaceAll(' ', '').replaceAll('-', '')}.com',
+        '${cleanName.replaceAll(' ', '-')}.com',
+        '${cleanName.replaceAll(' ', '')}.io',
+        '${cleanName.replaceAll(' ', '')}.app',
+      ];
+
+      if (candidates.isNotEmpty) {
+        domain = candidates.first;
+      }
+    }
+
+    if (domain == null) return null;
+
+    // Use Google's favicon service for high-quality icons
+    return 'https://www.google.com/s2/favicons?domain=$domain&sz=128';
+  }
+
+  @override
+  void didUpdateWidget(covariant _AppIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.iconUrl != oldWidget.iconUrl || widget.appName != oldWidget.appName) {
+      _imageBytes = null;
+      _loadedUrl = null;
+      _loadImage();
+    }
+  }
+
+  void _loadImage() async {
+    if (_loading || _loadedUrl != null) return;
+
+    // Try agent icon_url first
+    final agentUrl = widget.iconUrl;
+    if (agentUrl != null && agentUrl.isNotEmpty) {
+      _loading = true;
+      try {
+        final response = await http.get(Uri.parse(agentUrl)).timeout(const Duration(seconds: 3));
+        if (response.statusCode == 200 && response.bodyBytes.length > 100 && mounted) {
+          setState(() {
+            _imageBytes = response.bodyBytes;
+            _loadedUrl = agentUrl;
+            _loading = false;
+          });
+          return;
+        }
+      } catch (_) {}
+      if (mounted) setState(() => _loading = false);
+    }
+
+    // Fall back to online icon based on app name
+    final onlineUrl = _getOnlineIconUrl();
+    if (onlineUrl != null && mounted) {
+      setState(() => _loading = true);
+      try {
+        final response = await http.get(Uri.parse(onlineUrl)).timeout(const Duration(seconds: 5));
+        if (response.statusCode == 200 && response.bodyBytes.length > 100 && mounted) {
+          setState(() {
+            _imageBytes = response.bodyBytes;
+            _loadedUrl = onlineUrl;
+            _loading = false;
+          });
+          return;
+        }
+      } catch (_) {}
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_imageBytes == null && !_loading) {
+      _loadImage();
+    }
+
+    return Container(
+      width: widget.size,
+      height: widget.size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(widget.radius),
+        boxShadow: [
+          BoxShadow(
+            color: widget.color.withValues(alpha: 0.25),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: _imageBytes != null
+          ? Image.memory(_imageBytes!, fit: BoxFit.cover, width: widget.size, height: widget.size)
+          : _fallback(),
+    );
+  }
+
+  Widget _fallback() {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [widget.color, widget.color.withValues(alpha: 0.7)],
+        ),
+      ),
+      child: Center(
+        child: Text(
+          widget.initial,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: widget.size * 0.44,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DashboardDeviceCard extends StatelessWidget {
+  final Device device;
+  final bool? isOnline;
+  final bool isStarting;
+  final bool isWaking;
+  final AgentStatus? agentStatus;
+  final SystemStats? stats;
+  final VoidCallback onWake;
+  final VoidCallback? onLongPress;
+  final VoidCallback? onTap;
+
+  const _DashboardDeviceCard({
+    required this.device,
+    required this.isOnline,
+    required this.isStarting,
+    required this.isWaking,
+    this.agentStatus,
+    this.stats,
+    required this.onWake,
+    this.onLongPress,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            // Top row: icon + name + power
+            Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: isOnline == true
+                        ? AppColors.green.withValues(alpha: 0.12)
+                        : isStarting
+                            ? AppColors.orange.withValues(alpha: 0.12)
+                            : AppColors.cardLight,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    Icons.desktop_mac_rounded,
+                    color: isOnline == true
+                        ? AppColors.green
+                        : isStarting
+                            ? AppColors.orange
+                            : AppColors.tertiaryLabel,
+                    size: 18,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        agentStatus != null ? agentStatus!.hostname : device.name,
+                        style: const TextStyle(
+                          color: AppColors.label,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w400,
+                          letterSpacing: -0.2,
+                        ),
+                      ),
+                      Text(
+                        agentStatus != null
+                            ? '(${agentStatus!.platform})'
+                            : isStarting
+                                ? 'Starting...'
+                                : device.mac,
+                        style: const TextStyle(
+                          color: AppColors.secondaryLabel,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                isWaking
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.blue,
+                        ),
+                      )
+                    : GestureDetector(
+                        onTap: onWake,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          child: Icon(
+                            Icons.power_settings_new_rounded,
+                            color: isOnline == true ? AppColors.blue : AppColors.quaternaryLabel,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+              ],
+            ),
+            // Stats row (only when online with agent)
+            if (isOnline == true && stats != null) ...[
+              const SizedBox(height: 10),
+              const Divider(color: AppColors.separator, height: 0.5),
+              const SizedBox(height: 10),
+              _MiniStatRow(stats: stats!),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniStatRow extends StatelessWidget {
+  final SystemStats stats;
+
+  const _MiniStatRow({required this.stats});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _MiniStat(label: 'CPU', value: stats.cpuPercent, color: AppColors.blue),
+        const SizedBox(width: 12),
+        _MiniStat(label: 'RAM', value: stats.ramPercent, color: AppColors.green),
+        const SizedBox(width: 12),
+        _MiniStat(label: 'Disk', value: stats.diskPercent, color: AppColors.orange),
+        const SizedBox(width: 6),
+        // Live indicator dot
+        Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(
+            color: AppColors.green,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.green.withValues(alpha: 0.4),
+                blurRadius: 4,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MiniStat extends StatelessWidget {
+  final String label;
+  final double value;
+  final Color color;
+
+  const _MiniStat({required this.label, required this.value, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(color: AppColors.tertiaryLabel, fontSize: 11),
+              ),
+              Text(
+                '${value.toStringAsFixed(0)}%',
+                style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: value / 100,
+              backgroundColor: AppColors.separator,
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+              minHeight: 4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ============================================================
@@ -2065,18 +3352,20 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       ),
     );
     if (confirm == true && mounted) {
-      // Unregister from the agent before removing
-      String? unregisterError;
+      // Best-effort unregister — device is removed locally regardless
+      String? unregisterMsg;
       if (widget.device!.hasAgent) {
-        final (ok, msg) = await _agent.unregisterDevice(widget.device!, deviceId: _deviceId);
-        if (!ok) unregisterError = msg;
+        // Ensure device ID is loaded (may not have completed from initState)
+        final deviceId = _deviceId.isNotEmpty ? _deviceId : await _storage.getDeviceId();
+        final (ok, msg) = await _agent.unregisterDevice(widget.device!, deviceId: deviceId);
+        if (!ok) unregisterMsg = msg;
       }
       if (!mounted) return;
-      if (unregisterError != null) {
+      if (unregisterMsg != null) {
         showTopNotification(
-          context, // ignore: use_build_context_synchronously
-          message: 'Could not unregister from PC: $unregisterError. The device may remain occupied.',
-          icon: Icons.warning_amber_rounded,
+          context,
+          message: unregisterMsg,
+          icon: Icons.info_outline_rounded,
           iconColor: AppColors.orange,
         );
       }
@@ -2124,6 +3413,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   }
 
   Future<void> _scanForAgent() async {
+    HapticFeedback.lightImpact();
     setState(() {
       _scanning = true;
       _scanMessage = 'Scanning network...';
@@ -2276,19 +3566,20 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                     child: InkWell(
                       onTap: _scanning ? null : _scanForAgent,
                       borderRadius: BorderRadius.circular(12),
-                      child: const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 14),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 13),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.radar_rounded, color: Colors.white, size: 18),
-                            SizedBox(width: 8),
+                            Icon(Icons.radar_rounded, color: Colors.white, size: 17),
+                            const SizedBox(width: 8),
                             Text(
                               'Scan Network',
-                              style: TextStyle(
+                              style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 16,
+                                fontSize: 15,
                                 fontWeight: FontWeight.w600,
+                                letterSpacing: -0.2,
                               ),
                             ),
                           ],
@@ -2299,7 +3590,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 ),
               ),
             IOSSection(
-              header: 'DEVICE INFO',
+              header: 'Device Info',
               children: [
                 _buildField(
                   hint: 'Name',
@@ -2317,7 +3608,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
               ],
             ),
             IOSSection(
-              header: 'NETWORK',
+              header: 'Network',
               children: [
                 _buildField(
                   hint: 'IP Address',
@@ -2342,8 +3633,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                           child: Text(
                             'WoL',
                             style: TextStyle(
-                              color: AppColors.secondaryLabel,
-                              fontSize: 14,
+                              color: AppColors.tertiaryLabel,
+                              fontSize: 13,
                             ),
                           ),
                         ),
@@ -2352,7 +3643,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                             broadcast,
                             style: const TextStyle(
                               color: AppColors.green,
-                              fontSize: 14,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
                             ),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -2360,10 +3652,10 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                         const SizedBox(width: 8),
                         const Flexible(
                           child: Text(
-                            '(auto-derived)',
+                            'auto-derived',
                             style: TextStyle(
-                              color: AppColors.tertiaryLabel,
-                              fontSize: 12,
+                              color: AppColors.quaternaryLabel,
+                              fontSize: 11,
                             ),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -2378,16 +3670,16 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                   ),
                 // Port selector
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
                         'WoL Port',
                         style: TextStyle(
-                          color: AppColors.tertiaryLabel,
+                          color: AppColors.quaternaryLabel,
                           fontSize: 12,
-                          height: 1.4,
+                          height: 1.3,
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -2403,10 +3695,12 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                               selectedColor: AppColors.blue,
                               backgroundColor: AppColors.cardLight,
                               labelStyle: TextStyle(
-                                color: isSelected ? Colors.white : AppColors.label,
-                                fontSize: 14,
+                                color: isSelected ? Colors.white : AppColors.secondaryLabel,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
                               ),
                               side: BorderSide.none,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                             ),
                           );
                         }).toList(),
@@ -2452,19 +3746,19 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 header: null,
                 children: [
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
                     child: SizedBox(
                       width: double.infinity,
                       child: TextButton(
                         onPressed: _deleteDevice,
                         style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
                         ),
                         child: const Text(
                           'Delete Device',
                           style: TextStyle(
                             color: AppColors.red,
-                            fontSize: 16,
+                            fontSize: 15,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -2561,15 +3855,15 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 12),
+          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 10),
           child: Align(
             alignment: Alignment.centerLeft,
             child: Text(
               description,
               style: const TextStyle(
-                color: AppColors.tertiaryLabel,
+                color: AppColors.quaternaryLabel,
                 fontSize: 12,
-                height: 1.4,
+                height: 1.3,
               ),
             ),
           ),
@@ -2602,9 +3896,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   final _storage = StorageService();
   final _audioOutput = AudioOutputService();
   bool _busy = false;
-  final bool _scanning = false;
-  bool _deviceInfoExpanded = false;
-  static const _scanMessage = 'Scanning network...';
   bool? _online;
   AgentStatus? _agentStatus;
   Timer? _refreshTimer;
@@ -2694,12 +3985,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     }
   }
 
-  /// Mask the middle of a value with ****, keeping first and last 3 chars.
-  static String _maskValue(String input) {
-    if (input.length <= 6) return '****';
-    return '${input.substring(0, 3)}****${input.substring(input.length - 3)}';
-  }
-
   Future<void> _handleAgent(String action) async {
     // Show confirmation dialog
     final confirm = await showDialog<bool>(
@@ -2728,7 +4013,18 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     );
     if (confirm != true || !mounted) return;
 
+    HapticFeedback.mediumImpact();
     setState(() => _busy = true);
+
+    // For sleep, set "starting" state BEFORE the HTTP call because
+    // SetSystemPowerState blocks until wake — the response will time out.
+    if (action == 'sleep') {
+      setState(() {
+        _startedAt = DateTime.now();
+        _online = false;
+      });
+    }
+
     final (ok, msg) = await _agent.sendAction(_device, action);
     setState(() {
       _busy = false;
@@ -2740,9 +4036,21 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     if (mounted) {
       showTopNotification(
         context,
-        message: ok ? msg : 'Failed: $msg',
-        icon: ok ? Icons.check_circle_outline_rounded : Icons.error_outline_rounded,
-        iconColor: ok ? AppColors.green : AppColors.red,
+        message: action == 'sleep'
+            ? 'PC is sleeping...'
+            : ok
+                ? msg
+                : 'Failed: $msg',
+        icon: action == 'sleep'
+            ? Icons.bedtime_rounded
+            : ok
+                ? Icons.check_circle_outline_rounded
+                : Icons.error_outline_rounded,
+        iconColor: action == 'sleep'
+            ? AppColors.indigo
+            : ok
+                ? AppColors.green
+                : AppColors.red,
       );
     }
     _checkOnline();
@@ -2957,16 +4265,16 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               children: [
                 IOSListTile(
                   leading: Container(
-                    width: 36,
-                    height: 36,
+                    width: 34,
+                    height: 34,
                     decoration: BoxDecoration(
                       color: _online == true
-                          ? AppColors.green.withValues(alpha: 0.15)
+                          ? AppColors.green.withValues(alpha: 0.12)
                           : _startedAt != null &&
                                   DateTime.now().difference(_startedAt!).inSeconds < 60
-                              ? AppColors.orange.withValues(alpha: 0.15)
+                              ? AppColors.orange.withValues(alpha: 0.12)
                               : _online == false
-                                  ? AppColors.red.withValues(alpha: 0.15)
+                                  ? AppColors.red.withValues(alpha: 0.12)
                                   : AppColors.cardLight,
                       borderRadius: BorderRadius.circular(8),
                     ),
@@ -2987,7 +4295,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                               : _online == false
                                   ? AppColors.red
                                   : AppColors.secondaryLabel,
-                      size: 20,
+                      size: 18,
                     ),
                   ),
                   title: _online == true
@@ -3016,7 +4324,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     const Padding(
                       padding: EdgeInsets.only(left: 16, bottom: 8),
                       child: Text(
-                        'ACTIONS',
+                        'Actions',
                         style: TextStyle(
                           color: AppColors.secondaryLabel,
                           fontSize: 13,
@@ -3034,7 +4342,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                         children: [
                           // 4-column icon grid
                           Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+                            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                               children: [
@@ -3052,7 +4360,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                                 ),
                                 _ActionGridItem(
                                   icon: Icons.bedtime_rounded,
-                                  iconColor: AppColors.blue,
+                                  iconColor: AppColors.indigo,
                                   label: 'Sleep',
                                   onTap: _busy ? null : () => _handleAgent('sleep'),
                                 ),
@@ -3079,33 +4387,35 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                                     Icon(
                                       _pcMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
                                       color: _pcMuted ? AppColors.red : AppColors.secondaryLabel,
-                                      size: 18,
+                                      size: 16,
                                     ),
                                     const SizedBox(width: 8),
                                     const Text(
                                       'Volume',
-                                      style: TextStyle(color: AppColors.label, fontSize: 15),
+                                      style: TextStyle(
+                                        color: AppColors.label,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                      ),
                                     ),
                                     const Spacer(),
                                     GestureDetector(
                                       onTap: _togglePcMute,
-                                      child: Icon(
-                                        _pcMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                                        color: _pcMuted ? AppColors.red : AppColors.tertiaryLabel,
-                                        size: 20,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      _pcMuted ? 'Muted' : '$_pcVolume%',
-                                      style: TextStyle(
-                                        color: _pcMuted ? AppColors.red : AppColors.secondaryLabel,
-                                        fontSize: 14,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                        child: Text(
+                                          _pcMuted ? 'Muted' : '$_pcVolume%',
+                                          style: TextStyle(
+                                            color: _pcMuted ? AppColors.red : AppColors.secondaryLabel,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ],
                                 ),
-                                const SizedBox(height: 4),
+                                const SizedBox(height: 2),
                                 SliderTheme(
                                   data: SliderTheme.of(context).copyWith(
                                     activeTrackColor: AppColors.green,
@@ -3113,7 +4423,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                                     thumbColor: AppColors.green,
                                     overlayColor: AppColors.green.withValues(alpha: 0.1),
                                     trackHeight: 3,
-                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                                   ),
                                   child: Slider(
                                     value: _pcMuted ? 0 : _pcVolume.toDouble(),
@@ -3134,21 +4444,25 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                           if (_audioLoaded && _pcAudioDevices.isNotEmpty) ...[
                             const Divider(height: 1, color: AppColors.separator, indent: 16, endIndent: 16),
                             Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Row(
                                     children: [
-                                      const Icon(Icons.surround_sound_rounded, color: AppColors.secondaryLabel, size: 18),
+                                      const Icon(Icons.surround_sound_rounded, color: AppColors.secondaryLabel, size: 16),
                                       const SizedBox(width: 8),
                                       const Text(
-                                        'Output device',
-                                        style: TextStyle(color: AppColors.label, fontSize: 15, fontWeight: FontWeight.w500),
+                                        'Output Device',
+                                        style: TextStyle(
+                                          color: AppColors.label,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500,
+                                        ),
                                       ),
                                     ],
                                   ),
-                                  const SizedBox(height: 8),
+                                  const SizedBox(height: 6),
                                   ..._pcAudioDevices.map((dev) {
                                     final isCurrent = dev.id == _activePcAudioDeviceId;
                                     final devIcon = _getAudioDeviceIcon(dev.type);
@@ -3157,59 +4471,54 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                                     return GestureDetector(
                                       onTap: isCurrent ? null : () => _switchPcAudioDevice(dev.id),
                                       child: Container(
-                                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                                        margin: const EdgeInsets.only(bottom: 4),
+                                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                                        margin: const EdgeInsets.only(bottom: 2),
                                         decoration: BoxDecoration(
                                           color: isCurrent
-                                              ? AppColors.blue.withValues(alpha: 0.12)
+                                              ? AppColors.blue.withValues(alpha: 0.1)
                                               : Colors.transparent,
-                                          borderRadius: BorderRadius.circular(10),
+                                          borderRadius: BorderRadius.circular(8),
                                         ),
                                         child: Row(
                                           children: [
-                                            // Device type icon
                                             Container(
-                                              width: 32,
-                                              height: 32,
+                                              width: 30,
+                                              height: 30,
                                               decoration: BoxDecoration(
                                                 color: isCurrent
-                                                    ? AppColors.blue.withValues(alpha: 0.15)
+                                                    ? AppColors.blue.withValues(alpha: 0.12)
                                                     : AppColors.separator.withValues(alpha: 0.3),
-                                                borderRadius: BorderRadius.circular(8),
                                               ),
-                                              child: Icon(devIcon, color: isCurrent ? AppColors.blue : AppColors.secondaryLabel, size: 18),
+                                              child: Icon(devIcon, color: isCurrent ? AppColors.blue : AppColors.tertiaryLabel, size: 16),
                                             ),
-                                            const SizedBox(width: 12),
-                                            // Device name + subtitle
+                                            const SizedBox(width: 10),
                                             Expanded(
                                               child: Column(
                                                 crossAxisAlignment: CrossAxisAlignment.start,
                                                 children: [
                                                   Text(
-                                                    dev.name.length > 28 ? '${dev.name.substring(0, 25)}...' : dev.name,
+                                                    dev.name.length > 30 ? '${dev.name.substring(0, 27)}...' : dev.name,
                                                     style: TextStyle(
                                                       color: isCurrent ? AppColors.blue : AppColors.label,
-                                                      fontSize: 14,
+                                                      fontSize: 13,
                                                       fontWeight: isCurrent ? FontWeight.w500 : FontWeight.w400,
                                                     ),
                                                     overflow: TextOverflow.ellipsis,
                                                   ),
-                                                  const SizedBox(height: 2),
                                                   Text(
                                                     devSubtitle,
                                                     style: TextStyle(
                                                       color: isCurrent
                                                           ? AppColors.blue.withValues(alpha: 0.7)
                                                           : AppColors.tertiaryLabel,
-                                                      fontSize: 12,
+                                                      fontSize: 11,
                                                     ),
                                                   ),
                                                 ],
                                               ),
                                             ),
-                                            // Check mark
                                             if (isCurrent)
-                                              const Icon(Icons.check_circle_rounded, color: AppColors.blue, size: 18),
+                                              const Icon(Icons.check_circle_rounded, color: AppColors.blue, size: 16),
                                           ],
                                         ),
                                       ),
@@ -3225,90 +4534,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                   ],
                 ),
               ),
-
-            // Device info (collapsible)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(left: 16, bottom: 8),
-                    child: GestureDetector(
-                      onTap: () => setState(() => _deviceInfoExpanded = !_deviceInfoExpanded),
-                      behavior: HitTestBehavior.opaque,
-                      child: Row(
-                        children: [
-                          const Text(
-                            'DEVICE INFO',
-                            style: TextStyle(
-                              color: AppColors.secondaryLabel,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w400,
-                              letterSpacing: -0.1,
-                            ),
-                          ),
-                          const Spacer(),
-                          Icon(
-                            _deviceInfoExpanded
-                                ? Icons.keyboard_arrow_up_rounded
-                                : Icons.keyboard_arrow_down_rounded,
-                            color: AppColors.secondaryLabel,
-                            size: 20,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (_deviceInfoExpanded)
-                    Container(
-                      decoration: BoxDecoration(
-                        color: AppColors.card,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        children: [
-                          _InfoTile(label: 'MAC', value: _maskValue(d.mac)),
-                          _InfoTile(label: 'IP', value: _maskValue(d.ipAddress)),
-                          _InfoTile(label: 'Subnet', value: _maskValue(d.subnetMask)),
-                          _InfoTile(
-                            label: 'WoL',
-                            value: _maskValue('${d.broadcastAddress}:${d.port}'),
-                          ),
-                          if (d.hasAgent) ...[
-                            _InfoTile(
-                              label: 'Agent',
-                              value: _maskValue('${d.ipAddress}:${d.agentPort}'),
-                            ),
-                            _InfoTile(
-                              label: 'Token',
-                              value: _maskValue(d.agentToken),
-                              showSeparator: _agentStatus == null,
-                            ),
-                          ],
-                          if (d.hasAgent && _agentStatus != null) ...[
-                            _InfoTile(
-                              label: 'Host',
-                              value: _agentStatus!.hostname,
-                            ),
-                            _InfoTile(
-                              label: 'OS',
-                              value: _agentStatus!.platform,
-                              showSeparator: false,
-                            ),
-                          ],
-                          if (!d.hasAgent)
-                            const _InfoTile(
-                              label: 'Agent',
-                              value: '(not configured)',
-                              showSeparator: false,
-                            ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
 
             // Agent setup hint (when no token configured)
             if (!d.hasAgent)
@@ -3339,48 +4564,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                   ),
                 ),
               ),
+
+
           ],
         ),
         ),
-        if (_scanning)
-          Container(
-            color: Colors.black.withValues(alpha: 0.5),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 4, sigmaY: 4),
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                  decoration: BoxDecoration(
-                    color: AppColors.card.withValues(alpha: 0.9),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        width: 28,
-                        height: 28,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Text(
-                        _scanMessage,
-                        style: const TextStyle(
-                          color: AppColors.label,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
       ],
     ),
     );
@@ -3409,25 +4597,26 @@ class _ActionGridItem extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: SizedBox(
-        width: 72,
+        width: 68,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 52,
-              height: 52,
+              width: 48,
+              height: 48,
               decoration: BoxDecoration(
-                color: iconColor.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(14),
+                color: iconColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(icon, color: iconColor, size: 24),
+              child: Icon(icon, color: iconColor, size: 22),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 5),
             Text(
               label,
               style: TextStyle(
-                color: onTap != null ? AppColors.label : AppColors.tertiaryLabel,
-                fontSize: 12,
+                color: onTap != null ? AppColors.secondaryLabel : AppColors.quaternaryLabel,
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
               ),
               textAlign: TextAlign.center,
             ),
@@ -3439,60 +4628,6 @@ class _ActionGridItem extends StatelessWidget {
 }
 
 // ============================================================
-// iOS INFO TILE
-// ============================================================
-
-class _InfoTile extends StatelessWidget {
-  final String label;
-  final String value;
-  final bool showSeparator;
-
-  const _InfoTile({
-    required this.label,
-    required this.value,
-    this.showSeparator = true,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 60,
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    color: AppColors.secondaryLabel,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Text(
-                  value,
-                  style: const TextStyle(
-                    color: AppColors.label,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (showSeparator)
-          const Padding(
-            padding: EdgeInsets.only(left: 76),
-            child: Divider(color: AppColors.separator, height: 0.5),
-          ),
-      ],
-    );
-  }
-}
-
 // ============================================================
 // AGENT PICKER SHEET
 // ============================================================
@@ -3616,12 +4751,12 @@ class TutorialScreen extends StatelessWidget {
         centerTitle: true,
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 40),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildSection(
-              header: 'GETTING STARTED',
+              header: 'Getting Started',
               steps: [
                 _Step(
                   number: '1',
@@ -3641,7 +4776,7 @@ class TutorialScreen extends StatelessWidget {
             const SizedBox(height: 8),
 
             _buildSection(
-              header: 'TIPS',
+              header: 'Tips',
               steps: [
                 _Step(
                   number: '\u2022',
@@ -3713,15 +4848,15 @@ class _StepTile extends StatelessWidget {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 24,
-                height: 24,
+                width: 22,
+                height: 22,
                 decoration: BoxDecoration(
-                  color: AppColors.blue.withValues(alpha: 0.15),
+                  color: AppColors.blue.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Center(
@@ -3729,13 +4864,13 @@ class _StepTile extends StatelessWidget {
                     step.number,
                     style: const TextStyle(
                       color: AppColors.blue,
-                      fontSize: 12,
+                      fontSize: 11,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -3744,17 +4879,18 @@ class _StepTile extends StatelessWidget {
                       step.title,
                       style: const TextStyle(
                         color: AppColors.label,
-                        fontSize: 15,
+                        fontSize: 14,
                         fontWeight: FontWeight.w500,
+                        letterSpacing: -0.2,
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 4),
                     Text(
                       step.detail,
                       style: const TextStyle(
                         color: AppColors.secondaryLabel,
                         fontSize: 13,
-                        height: 1.5,
+                        height: 1.4,
                       ),
                     ),
                   ],
@@ -3765,7 +4901,7 @@ class _StepTile extends StatelessWidget {
         ),
         if (showSeparator)
           const Padding(
-            padding: EdgeInsets.only(left: 54),
+            padding: EdgeInsets.only(left: 50),
             child: Divider(color: AppColors.separator, height: 0.5),
           ),
       ],

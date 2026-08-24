@@ -21,6 +21,10 @@ def task_xml(python_exe: Path, agent_script: Path) -> bytes:
     task = ET.Element(tag("Task"), {"version": "1.4"})
     registration = ET.SubElement(task, tag("RegistrationInfo"))
     ET.SubElement(registration, tag("Description")).text = "WOLOW Lite PC Agent - background network service"
+    principals = ET.SubElement(task, tag("Principals"))
+    principal = ET.SubElement(principals, tag("Principal"), {"id": "Author"})
+    ET.SubElement(principal, tag("LogonType")).text = "InteractiveToken"
+    ET.SubElement(principal, tag("RunLevel")).text = "LeastPrivilege"
     triggers = ET.SubElement(task, tag("Triggers"))
     boot_trigger = ET.SubElement(triggers, tag("BootTrigger"))
     ET.SubElement(boot_trigger, tag("Enabled")).text = "true"
@@ -33,7 +37,7 @@ def task_xml(python_exe: Path, agent_script: Path) -> bytes:
     actions = ET.SubElement(task, tag("Actions"))
     execute = ET.SubElement(actions, tag("Exec"))
     ET.SubElement(execute, tag("Command")).text = str(python_exe)
-    ET.SubElement(execute, tag("Arguments")).text = f'"{agent_script}"'
+    ET.SubElement(execute, tag("Arguments")).text = str(agent_script)
     ET.SubElement(execute, tag("WorkingDirectory")).text = str(agent_script.parent)
     return ET.tostring(task, encoding="utf-16", xml_declaration=True)
 
@@ -54,7 +58,7 @@ def main() -> int:
         task_file.write(task_xml(python_exe, agent_script))
     try:
         completed = subprocess.run(
-            ["schtasks", "/create", "/tn", args.task_name, "/xml", str(task_path), "/ru", "SYSTEM", "/f"],
+            ["schtasks", "/create", "/tn", args.task_name, "/xml", str(task_path), "/f"],
             check=False,
         )
     finally:
