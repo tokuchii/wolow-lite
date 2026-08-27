@@ -905,9 +905,39 @@ def launch_app(path: str) -> dict:
 
         if is_windows():
             if path.lower().endswith(".lnk"):
-                _log.info("[LAUNCH] Using os.startfile for .lnk")
-                os.startfile(path)
-                _log.info("[LAUNCH] os.startfile succeeded")
+                _log.info("[LAUNCH] Resolving .lnk for launch: %s", path)
+                resolved = _resolve_lnk_target(path)
+                _log.info("[LAUNCH] Resolved .lnk -> %s", resolved)
+
+                # If resolved contains Steam arguments like -applaunch <id>, use steam URI
+                try:
+                    import re as _re
+                    m = _re.search(r"-applaunch\s+(\d+)", resolved, _re.IGNORECASE)
+                    if m:
+                        appid = m.group(1)
+                        steam_uri = f"steam://rungameid/{appid}"
+                        _log.info("[LAUNCH] Detected Steam -applaunch %s, launching %s", appid, steam_uri)
+                        os.startfile(steam_uri)
+                        return {"ok": True}
+                    # Also check for direct steam:// URIs in arguments
+                    m2 = _re.search(r"steam://rungameid/(\d+)", resolved, _re.IGNORECASE)
+                    if m2:
+                        appid = m2.group(1)
+                        steam_uri = f"steam://rungameid/{appid}"
+                        _log.info("[LAUNCH] Detected steam URI in shortcut, launching %s", steam_uri)
+                        os.startfile(steam_uri)
+                        return {"ok": True}
+                except Exception:
+                    pass
+
+                # No steam app id found; try to execute the resolved command string.
+                try:
+                    _log.info("[LAUNCH] Executing resolved shortcut command")
+                    proc = subprocess.Popen(resolved, shell=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
+                    _log.info("[LAUNCH] Popen PID: %s", getattr(proc, 'pid', None))
+                    return {"ok": True}
+                except Exception as e:
+                    _log.error("[LAUNCH] Executing resolved shortcut failed: %s", e)
             elif "!" in path and not os.path.exists(path):
                 # UWP app (AppID contains "!" and isn't a file path)
                 _log.info("[LAUNCH] UWP app detected, using 'start' command")
@@ -1088,8 +1118,18 @@ def _resolve_lnk_target(lnk_path: str) -> str:
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(lnk_path)
         target = shortcut.Targetpath
-        if target and os.path.exists(target):
-            return target
+        args = ""
+        try:
+            args = shortcut.Arguments or ""
+        except Exception:
+            args = ""
+        if target:
+            # If args exist, return full command string so callers can include them
+            cmd = target
+            if args:
+                cmd = f'"{target}" {args}'
+            if os.path.exists(target):
+                return cmd
     except Exception:
         pass
     return lnk_path

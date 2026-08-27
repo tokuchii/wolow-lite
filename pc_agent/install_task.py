@@ -28,6 +28,20 @@ def task_xml(python_exe: Path, agent_script: Path) -> bytes:
     triggers = ET.SubElement(task, tag("Triggers"))
     boot_trigger = ET.SubElement(triggers, tag("BootTrigger"))
     ET.SubElement(boot_trigger, tag("Enabled")).text = "true"
+    # Also trigger on system resume from sleep (Power-Troubleshooter Event ID 1)
+    event_trigger = ET.SubElement(triggers, tag("EventTrigger"))
+    ET.SubElement(event_trigger, tag("Enabled")).text = "true"
+    subscription = ET.SubElement(event_trigger, tag("Subscription"))
+    # Query for Power-Troubleshooter Event ID 1 in the System log (resume from sleep)
+    subscription_xml = (
+        "<QueryList>"
+        "<Query Id=\"0\" Path=\"System\">"
+        "<Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]</Select>"
+        "</Query>"
+        "</QueryList>"
+    )
+    # Put the event query XML as the Subscription element's text
+    subscription.text = subscription_xml
     settings = ET.SubElement(task, tag("Settings"))
     for name, value in {"MultipleInstancesPolicy": "IgnoreNew", "DisallowStartIfOnBatteries": "false", "StopIfGoingOnBatteries": "false", "AllowHardTerminate": "true", "StartWhenAvailable": "true", "RunOnlyIfNetworkAvailable": "false", "AllowStartOnDemand": "true", "Enabled": "true", "Hidden": "true", "ExecutionTimeLimit": "PT0S", "Priority": "7"}.items():
         ET.SubElement(settings, tag(name)).text = value
